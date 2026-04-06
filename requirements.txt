@@ -1,0 +1,12 @@
+# AutoRE - Multi-agent Requirement Engineering System
+# Python dependencies
+
+# Core framework
+metagpt>=0.6.0
+
+# Utilities
+pathlib2>=2.3.7  # For Python 3.7 compatibility
+
+# For future enhancements
+# pyyaml>=6.0  # Configuration management
+# asyncio  # Included in Python 3.7+

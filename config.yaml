@@ -1,0 +1,37 @@
+# AutoRE Configuration
+
+# Alloy Analyzer settings
+alloy:
+  jar_path: "tools/alloy.jar"
+  execution_timeout: 300  # seconds
+
+# Workflow settings
+workflow:
+  max_iterations: 10
+  auto_iterate: false  # If true, won't wait for user feedback
+
+# File paths
+paths:
+  requirements_dir: "ReqsDoc"
+  models_dir: "AlloyModels"
+  output_dir: "AnalyzerOutput"
+  memory_dir: "memory"
+
+# Agent settings
+agents:
+  requirement_engineer:
+    name: "RequirementEngineer"
+    profile: "Requirement Engineer"
+    max_lessons_to_remember: 10
+
+  evaluator:
+    name: "Evaluator"
+    profile: "Requirements Evaluator"
+    max_feedback_history: 5
+
+# User interaction (CLI-based)
+user_interaction:
+  mode: "cli"  # CLI-based interaction
+  response_timeout: 300  # seconds (5 minutes) - system proceeds with no feedback after timeout
+  multiline_input: true  # Allow multi-line input (end with 'END')
+  log_directory: "outputlog"  # Directory for session logs (format: MMDDYY.log)

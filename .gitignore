@@ -1,2 +1,52 @@
 # Claude Code documentation - keep local only
-CLAUDE.md
+Documentations/CLAUDE.md
+
+# User interaction files (deprecated - now using CLI)
+user_prompt.txt
+user_feedback.txt
+archived_user_feedback.txt
+
+# Generated output
+ReqsDoc/*.txt
+AlloyModels/*.als
+AnalyzerOutput/*/
+memory/*.json
+outputlog/*.log
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
