@@ -78,7 +78,7 @@ The system follows this iterative workflow:
 
 2. **User Clarification** (Step 2)
    - System requests clarification on assumptions
-   - User provides feedback via `user_feedback.txt`
+   - User provides feedback via CLI (type response, end with `END`)
 
 3. **Model Creation** (Step 3)
    - RE agent builds initial Alloy model
@@ -94,9 +94,9 @@ The system follows this iterative workflow:
    - Requests user review and additional scenarios
 
 6. **User Feedback** (Step 6 continued)
-   - User reviews evaluation
-   - Provides feedback or additional scenarios
-   - Indicates satisfaction when complete
+   - User reviews evaluation in terminal
+   - Provides feedback or additional scenarios via CLI
+   - Types `SATISFIED` when complete
 
 7. **Requirement Updates** (Step 7)
    - Evaluator updates English requirements
@@ -144,7 +144,7 @@ Your response (type your feedback, then 'END' on a new line):
 - Results: `AnalyzerOutput/*/`
 - Logs: `outputlog/MMDDYY.log`
 
-See [CLI_USAGE.md](Documentations/CLI_USAGE.md) for detailed instructions.
+See [USER_INTERACTION_GUIDE.md](Documentations/USER_INTERACTION_GUIDE.md) for detailed instructions.
 
 ## Project Structure
 
@@ -170,7 +170,7 @@ autoRE/
 ├── tools/
 │   └── alloy.jar                     # Alloy Analyzer
 ├── Documentations/                   # Documentation files
-│   ├── CLI_USAGE.md                 # CLI interaction guide
+│   ├── USER_INTERACTION_GUIDE.md    # CLI interaction guide
 │   ├── QUICKSTART.md                # Quick start guide
 │   └── IMPLEMENTATION_SUMMARY.md    # Technical details
 ├── prompts/                          # Agent system prompts
@@ -256,9 +256,10 @@ python main.py example_input.txt
 - Install MetaGPT: `pip install metagpt`
 - Ensure API keys are configured for LLM access
 
-**Workflow hangs waiting for feedback:**
-- Create `user_feedback.txt` with your response
-- Ensure file has content before the system reads it
+**Workflow waiting for input:**
+- Remember to type `END` on a new line after your response
+- You have 5 minutes to respond before timeout
+- Check terminal for the input prompt
 
 ## Development
 
