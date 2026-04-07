@@ -1,5 +1,7 @@
-# Claude Code documentation - keep local only
+# Claude Code and Serena - keep local only
 Documentations/CLAUDE.md
+.claude/
+.serena/
 
 # User interaction files (deprecated - now using CLI)
 user_prompt.txt

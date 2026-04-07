@@ -28,15 +28,19 @@ python main.py example_input.txt
 ### Initial Clarification (Step 1-2)
 
 1. The system will analyze the requirements
-2. A prompt will appear in `user_prompt.txt`
-3. Create a file named `user_feedback.txt` with your clarifications
+2. A prompt will appear **directly in the terminal**
+3. Type your clarifications in the CLI and end with `END` on a new line
 
-Example `user_feedback.txt`:
+Example terminal interaction:
 ```
-Clarification 1: A member cannot reserve a book they currently have borrowed.
-Clarification 2: Members can only reserve books that are currently checked out.
-Clarification 3: Reservations are cancelled if membership expires.
-Clarification 4: Reserved books must be picked up within 3 days.
+Your response (type your feedback, then 'END' on a new line):
+Timeout: 300 seconds (5 minutes)
+
+> A member cannot reserve a book they currently have borrowed.
+> Members can only reserve books that are currently checked out.
+> Reservations are cancelled if membership expires.
+> Reserved books must be picked up within 3 days.
+> END
 ```
 
 ### Model Verification (Steps 3-8)
@@ -44,27 +48,32 @@ Clarification 4: Reserved books must be picked up within 3 days.
 The system will:
 1. Build an Alloy model (Step 3)
 2. Run verification (Step 4)
-3. Show results in `user_prompt.txt` (Steps 5-6)
-4. Wait for your feedback in `user_feedback.txt`
+3. Show results **directly in the terminal** (Steps 5-6)
+4. Wait for your feedback typed in the CLI
 
-Example feedback after verification:
+Example terminal interaction after verification:
 ```
-The model looks good. Please also check the following scenario:
+Your response (type your feedback, then 'END' on a new line):
+Timeout: 300 seconds (5 minutes)
 
-Scenario: Member with overdue book tries to reserve
-Check: Verify that members with overdue books cannot make reservations
-Expected: Reservation should be rejected
-
-Scenario: Maximum reservations
-Check: Verify that a member cannot have more than 2 active reservations
-Expected: Third reservation attempt should fail
+> The model looks good. Please also check the following scenario:
+>
+> Scenario: Member with overdue book tries to reserve
+> Check: Verify that members with overdue books cannot make reservations
+> Expected: Reservation should be rejected
+>
+> Scenario: Maximum reservations
+> Check: Verify that a member cannot have more than 2 active reservations
+> Expected: Third reservation attempt should fail
+> END
 ```
 
 ### Indicating Satisfaction
 
-When you're happy with the results, respond with:
+When you're happy with the results, type in the terminal:
 ```
-SATISFIED
+> SATISFIED
+> END
 ```
 
 ## Step 5: Review Results
@@ -131,9 +140,10 @@ python main.py example_input.txt --verbose
 
 ## Troubleshooting
 
-**System waiting forever:**
-- Make sure `user_feedback.txt` exists and has content
-- File must be in the project root directory
+**System waiting for input:**
+- Remember to type `END` on a new line after your feedback
+- You have 5 minutes to respond before timeout
+- Check terminal for the input prompt
 
 **MetaGPT errors:**
 - Ensure you've installed metagpt: `pip install metagpt`

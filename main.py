@@ -28,9 +28,10 @@ The system will:
 3. Verify the model using Alloy Analyzer
 4. Iterate based on your feedback until convergence
 
-User interaction is file-based:
-- Read prompts from: user_prompt.txt
-- Provide feedback in: user_feedback.txt
+User interaction is CLI-based:
+- Prompts appear directly in the terminal
+- Type your feedback and end with 'END' on a new line
+- All interactions logged to outputlog/MMDDYY.log
         """
     )
 
