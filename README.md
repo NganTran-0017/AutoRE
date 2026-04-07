@@ -16,7 +16,7 @@ AutoRE implements a collaborative multi-agent architecture with two specialized 
 - Automated verification with Alloy Analyzer
 - Iterative refinement based on user feedback
 - Memory-based learning to avoid repeated mistakes
-- File-based user interaction for easy collaboration
+- CLI user interaction for easy collaboration
 - Comprehensive tracking of all iterations and changes
 
 ## Installation
