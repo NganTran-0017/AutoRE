@@ -3,17 +3,22 @@ Documentations/CLAUDE.md
 .claude/
 .serena/
 
+# Environment variables (contains API keys)
+.env
+.env.local
+
 # User interaction files (deprecated - now using CLI)
 user_prompt.txt
 user_feedback.txt
 archived_user_feedback.txt
 
 # Generated output
-ReqsDoc/*.txt
-AlloyModels/*.als
-AnalyzerOutput/*/
-memory/*.json
-outputlog/*.log
+Output/
+ReqsDoc/
+AlloyModels/
+AnalyzerOutput/
+outputlog/
+memory/
 
 # Python
 __pycache__/

@@ -62,9 +62,26 @@ Specify maximum iterations:
 python main.py my_requirements.txt --max-iterations 15
 ```
 
-Use verbose output:
+Resume from a previous iteration:
 ```bash
-python main.py my_requirements.txt --verbose
+# Resume from latest iteration
+python main.py --resume
+
+# Resume from specific iteration
+python main.py --resume --resume-iteration 7
+
+# Resume and run 10 additional iterations
+python main.py --resume --max-iterations 10
+```
+
+List available iterations:
+```bash
+python main.py --list-iterations
+```
+
+Set user input timeout:
+```bash
+python main.py my_requirements.txt --timeout 600  # 10 minutes
 ```
 
 ## Workflow

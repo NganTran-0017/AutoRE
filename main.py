@@ -11,84 +11,90 @@ from pathlib import Path
 from src.workflow import AutoREWorkflow
 
 
-def main():
-    """Main entry point."""
-    parser = argparse.ArgumentParser(
-        description="AutoRE - Multi-agent Requirement Engineering System",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-Example usage:
-  python main.py example_input.txt
-  python main.py my_requirements.txt --max-iterations 15
-  python main.py my_requirements.txt --verbose
-
-The system will:
-1. Analyze your requirements and ask for clarification
-2. Build an Alloy model
-3. Verify the model using Alloy Analyzer
-4. Iterate based on your feedback until convergence
-
-User interaction is CLI-based:
-- Prompts appear directly in the terminal
-- Type your feedback and end with 'END' on a new line
-- All interactions logged to outputlog/MMDDYY.log
-        """
-    )
-
-    parser.add_argument(
-        "input_file",
-        type=str,
-        help="Path to initial requirements file"
-    )
-
-    parser.add_argument(
-        "--max-iterations",
-        type=int,
-        default=10,
-        help="Maximum number of refinement iterations (default: 10)"
-    )
-
-    parser.add_argument(
-        "--base-dir",
-        type=str,
-        default=".",
-        help="Base directory for the project (default: current directory)"
-    )
-
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Enable verbose output"
-    )
+async def main():
+    """Run AutoRE workflow."""
+    parser = argparse.ArgumentParser(description="AutoRE - Automated Requirements Engineering")
+    parser.add_argument("input_file", nargs="?", help="Input requirements file")
+    parser.add_argument("--max-iterations", type=int, default=10,
+                       help="Maximum refinement iterations (or additional iterations in resume mode)")
+    parser.add_argument("--timeout", type=int, default=300,
+                       help="User input timeout in seconds (default: 300)")
+    parser.add_argument("--project", default="default",
+                       help="Project name for memory isolation")
+    parser.add_argument("--resume", action="store_true",
+                       help="Resume from latest Alloy model and requirements")
+    parser.add_argument("--resume-iteration", type=int, default=None,
+                       help="Specific iteration to resume from (default: latest)")
+    parser.add_argument("--list-iterations", action="store_true",
+                       help="List available iterations and exit")
 
     args = parser.parse_args()
 
-    # Validate input file
-    input_path = Path(args.input_file)
-    if not input_path.exists():
-        print(f"Error: Input file not found: {args.input_file}")
-        sys.exit(1)
+    # Handle --list-iterations flag
+    if args.list_iterations:
+        from src.utils.file_manager import FileManager
+        file_manager = FileManager()
+
+        req_versions = file_manager.get_all_requirement_versions()
+        model_versions = file_manager.get_all_model_versions()
+
+        if not req_versions and not model_versions:
+            print("No iterations found.")
+            return
+
+        all_iterations = sorted(set(req_versions) | set(model_versions))
+
+        print("\nAvailable iterations:")
+        print(f"{'Iteration':<12} {'Requirements':<15} {'Model':<15}")
+        print("-" * 45)
+        for i in all_iterations:
+            req_mark = "✓" if i in req_versions else "✗"
+            model_mark = "✓" if i in model_versions else "✗"
+            print(f"{i:<12} {req_mark:<15} {model_mark:<15}")
+
+        print(f"\nTotal iterations: {len(all_iterations)}")
+        return
+
+    # Validate arguments
+    if not args.resume and not args.input_file:
+        parser.error("input_file is required when not using --resume")
+
+    if args.resume and args.input_file:
+        print("Warning: --resume specified, input_file will be ignored")
+
+    if not args.resume:
+        # Validate input file
+        input_path = Path(args.input_file)
+        if not input_path.exists():
+            print(f"Error: Input file not found: {args.input_file}")
+            sys.exit(1)
+        input_file = str(input_path)
+    else:
+        input_file = None
 
     # Create workflow
-    workflow = AutoREWorkflow(base_dir=args.base_dir)
+    workflow = AutoREWorkflow(
+        max_iterations=args.max_iterations,
+        timeout=args.timeout,
+        project_name=args.project,
+        input_file=input_file
+    )
 
     # Run workflow
     try:
-        asyncio.run(workflow.run(
-            input_file=str(input_path),
-            max_iterations=args.max_iterations
-        ))
+        await workflow.run(
+            resume_mode=args.resume,
+            resume_iteration=args.resume_iteration
+        )
     except KeyboardInterrupt:
         print("\n\nWorkflow interrupted by user.")
-        print("Progress has been saved. You can resume by running the workflow again.")
         sys.exit(0)
     except Exception as e:
-        print(f"\n\nError running workflow: {e}")
-        if args.verbose:
-            import traceback
-            traceback.print_exc()
+        print(f"\n\nError: {e}")
+        import traceback
+        traceback.print_exc()
         sys.exit(1)
 
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())

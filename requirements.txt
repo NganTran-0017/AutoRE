@@ -4,9 +4,13 @@
 # Core framework
 metagpt>=0.6.0
 
-# Utilities
-pathlib2>=2.3.7  # For Python 3.7 compatibility
+# Configuration management
+pyyaml>=6.0
 
-# For future enhancements
-# pyyaml>=6.0  # Configuration management
-# asyncio  # Included in Python 3.7+
+# Semantic memory system
+sentence-transformers>=2.2.0
+faiss-cpu>=1.7.4
+numpy>=1.21.0
+
+# Utilities
+pathlib2>=2.3.7

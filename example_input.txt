@@ -1,42 +1,21 @@
 SYSTEM DESCRIPTION:
-This is a Library Management System that manages books, members, and borrowing operations.
+The Role-based Access Control system operates in a multi-user environment and supports role hierarchy, temporary role delegation, revocation of delegated role, and concurrent request processing. The system must preserve authorization correctness, delegation and permission consistency, liveness of request processing, and safety under concurrency.
+Each user in the system is assigned a security clearance level: High, Medium, or Low. Administrators have High clearance level, but not all High-clearance users are Administrators. Users may hold assigned roles or delegated roles, subject to clearance constraints. Users may submit requests for actions, where each action affects one or more system objects, each with a classification level of High, Medium, or Low. The classification of a request is the highest classification of any affected object. Users may submit only requests which have classification levels less than or equal to user clearance. Users with higher clearance may approve or reject requests from lower-clearance users. Requests may be submitted and processed concurrently in FIFO order, and every request is eventually processed.
+Users with higher clearance may temporarily delegate one or more of their assigned roles to a lower-clearance user, provided that the delegate meets the role’s minimum clearance requirement. Delegated roles must expire after a fixed amount of time or be revoked at any time by administrators. 
 
-EXISTING SYSTEM COMPONENTS:
-1. Books: Each book has a unique ID, title, author, and ISBN
-2. Members: Each member has a unique ID, name, and membership status
-3. Current system tracks which books are available and which are checked out
-
-REQUIREMENTS FOR NEW MODULE: Enhanced Borrowing System
+REQUIREMENTS FOR NEW MODULE: Emergency Module
 
 FUNCTIONAL REQUIREMENTS:
 
-FR1: Book Borrowing
-- Members can borrow books if they are available
-- A member can borrow at most 3 books at a time
-- A book can only be borrowed by one member at a time
+Emergency module requirements:
+R1. While operating in Normal mode, exactly 2 administrators are required to trigger an emergency, causing the system to enter the Emergency mode.
+R2. The Emergency mode is active only for a limited time, and the system must eventually return to Normal mode.
+R3. During the Emergency mode:
+    R3.1. Request processing may bypass the FIFO order to prioritize processing multiple high classification requests at the same time.
+    R3.2. Users may temporarily hold mutual exclusive roles. 
+    R3.3. Administrators temporarily hold emergency privileges.
+R4. After Emergency mode ends:
+    R4.1. Emergency privileges must be revoked.
+    R4.2 Delegated roles during the emergency must be revoked.
+    R4.3. Administrators must update their credentials.
 
-FR2: Book Returning
-- Members can return books they have borrowed
-- Upon return, the book becomes available again
-
-FR3: Reservations
-- Members can reserve books that are currently borrowed
-- When a reserved book is returned, it should be held for the member who reserved it
-- A book can have multiple reservations, handled in FIFO order
-- A member can have at most 2 active reservations
-
-FR4: Overdue Management
-- Books can be borrowed for a maximum period (e.g., 14 days)
-- If a book is overdue, the member cannot borrow more books until it is returned
-- Members with overdue books cannot make new reservations
-
-CONSTRAINTS:
-- The system must maintain data consistency
-- No book should be in an invalid state (e.g., both available and borrowed)
-- Members must exist in the system before they can borrow or reserve books
-
-QUESTIONS TO CLARIFY:
-- What happens if a member tries to reserve a book they already have borrowed?
-- Can a member reserve a book that is currently available?
-- What happens to reservations when a member's membership expires?
-- Should there be a time limit for picking up reserved books?

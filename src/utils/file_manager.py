@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 from typing import Optional, List
 import shutil
+import yaml
 
 
 class FileManager:
@@ -16,27 +17,46 @@ class FileManager:
             base_dir: Base directory for the project
         """
         self.base_dir = Path(base_dir)
-        self.reqs_dir = self.base_dir / "ReqsDoc"
-        self.models_dir = self.base_dir / "AlloyModels"
-        self.output_dir = self.base_dir / "AnalyzerOutput"
+
+        # Load paths from config.yaml
+        config_path = self.base_dir / "config.yaml"
+        if config_path.exists():
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            paths = config.get('paths', {})
+            self.reqs_dir = self.base_dir / paths.get('requirements_dir', 'ReqsDoc')
+            self.models_dir = self.base_dir / paths.get('models_dir', 'AlloyModels')
+            self.output_dir = self.base_dir / paths.get('output_dir', 'AnalyzerOutput')
+            self.feedback_dir = self.base_dir / paths.get('feedback_dir', 'Output/Feedback')
+        else:
+            # Fallback to default paths
+            self.reqs_dir = self.base_dir / "ReqsDoc"
+            self.models_dir = self.base_dir / "AlloyModels"
+            self.output_dir = self.base_dir / "AnalyzerOutput"
+            self.feedback_dir = self.base_dir / "Output/Feedback"
 
         # Create directories if they don't exist
         self.reqs_dir.mkdir(parents=True, exist_ok=True)
         self.models_dir.mkdir(parents=True, exist_ok=True)
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self.feedback_dir.mkdir(parents=True, exist_ok=True)
 
-    def save_requirements(self, content: str, iteration: int):
+    def save_requirements(self, content: str, iteration: int) -> Path:
         """
         Save requirements document.
 
         Args:
             content: Requirements content
             iteration: Iteration number
+
+        Returns:
+            Path to saved file
         """
         filepath = self.reqs_dir / f"Reqs_{iteration}.txt"
         with open(filepath, 'w') as f:
             f.write(content)
         print(f"Requirements saved to: {filepath}")
+        return filepath
 
     def load_requirements(self, iteration: int) -> Optional[str]:
         """
@@ -68,18 +88,46 @@ class FileManager:
         with open(latest, 'r') as f:
             return f.read()
 
-    def save_alloy_model(self, content: str, iteration: int):
+    def save_alloy_model(self, content: str, iteration: int) -> Path:
         """
-        Save Alloy model.
+        Save Alloy model, extracting code from markdown fences if present.
 
         Args:
-            content: Alloy model content
+            content: Alloy model content (may contain ```alloy ... ```)
             iteration: Iteration number
+
+        Returns:
+            Path to saved file
         """
+        import re
+        
+        content = content.strip()
+        
+        # Try to extract code from markdown fence (```alloy ... ```)
+        # Look for the first alloy code block in the response
+        alloy_block_pattern = r'```alloy\s*\n(.*?)```'
+        match = re.search(alloy_block_pattern, content, re.DOTALL)
+        
+        if match:
+            # Found alloy code block - extract just the code
+            content = match.group(1).strip()
+        elif content.startswith('```'):
+            # Generic code block at start - strip fences
+            lines = content.split('\n')
+            # Remove first line (```alloy or ```)
+            if lines[0].startswith('```'):
+                lines = lines[1:]
+            # Remove last line if it's a closing fence
+            if lines and lines[-1].strip() == '```':
+                lines = lines[:-1]
+            content = '\n'.join(lines)
+        # else: assume it's already plain Alloy code
+
         filepath = self.models_dir / f"AlloyModel__{iteration}.als"
         with open(filepath, 'w') as f:
             f.write(content)
         print(f"Alloy model saved to: {filepath}")
+        return filepath
 
     def load_alloy_model(self, iteration: int) -> Optional[str]:
         """
@@ -151,6 +199,62 @@ class FileManager:
         if not output_path.exists():
             return []
         return list(output_path.glob("*.json"))
+
+    def save_feedback(self, feedback: dict, iteration: int):
+        """
+        Save evaluator feedback to file.
+
+        Args:
+            feedback: Feedback dictionary from evaluator
+            iteration: Iteration number
+        """
+        filepath = self.feedback_dir / f"feedback_{iteration}.txt"
+        
+        # Format feedback dict as readable text
+        content_parts = []
+        
+        if isinstance(feedback, dict):
+            for key, value in feedback.items():
+                content_parts.append(f"=== {key.upper().replace('_', ' ')} ===\n")
+                content_parts.append(f"{value}\n\n")
+        else:
+            content_parts.append(str(feedback))
+        
+        content = "".join(content_parts)
+        
+        with open(filepath, 'w') as f:
+            f.write(content)
+        print(f"Feedback saved to: {filepath}")
+
+    def load_feedback(self, iteration: int) -> Optional[str]:
+        """
+        Load evaluator feedback from file.
+
+        Args:
+            iteration: Iteration number
+
+        Returns:
+            Feedback content or None if not found
+        """
+        filepath = self.feedback_dir / f"feedback_{iteration}.txt"
+        if filepath.exists():
+            with open(filepath, 'r') as f:
+                return f.read()
+        return None
+
+    def get_latest_feedback(self) -> Optional[str]:
+        """
+        Get the latest feedback document.
+
+        Returns:
+            Latest feedback content or None
+        """
+        files = list(self.feedback_dir.glob("feedback_*.txt"))
+        if not files:
+            return None
+        latest = max(files, key=lambda p: int(p.stem.split('_')[1]))
+        with open(latest, 'r') as f:
+            return f.read()
 
     def load_user_feedback(self, feedback_file: str = "user_feedback.txt") -> Optional[str]:
         """

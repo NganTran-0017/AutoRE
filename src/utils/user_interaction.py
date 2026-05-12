@@ -1,11 +1,31 @@
-"""User interaction utilities for file-based communication."""
+"""
+User interaction utilities for file-based communication.
+
+LEGACY CODE - UNUSED IN CURRENT VERSION
+
+This module contains the old UserInteraction class that has been
+replaced by CLIInteraction for CLI-based user interaction.
+
+Status: Not instantiated anywhere in current codebase
+Kept for: Backward compatibility / potential future GUI implementation
+Consider: Mark as deprecated or remove in future refactoring
+
+For current CLI interaction, see: cli_interaction.py
+"""
 from pathlib import Path
 from typing import Optional
 import time
 
 
 class UserInteraction:
-    """Manages file-based user interaction."""
+    """
+    DEPRECATED: Use CLIInteraction instead.
+
+    Manages file-based user interaction.
+
+    This class is kept for backward compatibility but is not used
+    in the current CLI-based workflow.
+    """
 
     def __init__(self, base_dir: str = "."):
         """

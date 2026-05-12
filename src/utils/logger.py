@@ -3,18 +3,29 @@ import sys
 from pathlib import Path
 from datetime import datetime
 from typing import Optional
+import yaml
 
 
 class AutoRELogger:
     """Logger that writes to both console and log file."""
 
-    def __init__(self, log_dir: str = "outputlog"):
+    def __init__(self, log_dir: str = None):
         """
         Initialize logger.
 
         Args:
-            log_dir: Directory for log files
+            log_dir: Directory for log files (if None, loads from config)
         """
+        if log_dir is None:
+            # Load from config
+            config_path = Path("config.yaml")
+            if config_path.exists():
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                log_dir = config.get('user_interaction', {}).get('log_directory', 'outputlog')
+            else:
+                log_dir = "outputlog"
+
         self.log_dir = Path(log_dir)
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
@@ -105,6 +116,53 @@ class AutoRELogger:
         self.log("\n--- USER INPUT ---", to_console=False)
         self.log(user_input)
         self.log("--- END INPUT ---\n", to_console=False)
+
+    def log_agent_communication(self, agent_name: str, action_name: str, prompt: str, response: str):
+        """
+        Log agent prompt and response.
+
+        Args:
+            agent_name: Name of the agent
+            action_name: Name of the action
+            prompt: Prompt sent to LLM
+            response: Response from LLM
+        """
+        self.log(f"\n{'='*80}", to_console=False)
+        self.log(f"[{agent_name.upper()}] {action_name}", to_console=False)
+        self.log(f"{'='*80}", to_console=False)
+        self.log("\n--- PROMPT SENT TO LLM ---", to_console=False)
+        self.log(prompt, to_console=False)
+        self.log(f"\n--- {action_name} --- RESPONSE FROM LLM ---", to_console=False)
+        self.log(response, to_console=False)
+        self.log(f"{'='*80}\n", to_console=False)
+
+    def log_alloy_execution(self, model_path: str, stdout: str, stderr: str, return_code: int, analysis: dict):
+        """
+        Log Alloy Analyzer execution details.
+
+        Args:
+            model_path: Path to the model file
+            stdout: Standard output from Alloy
+            stderr: Standard error from Alloy
+            return_code: Return code from execution
+            analysis: Analysis results dictionary
+        """
+        self.log(f"\n{'='*80}", to_console=False)
+        self.log(f"ALLOY ANALYZER EXECUTION", to_console=False)
+        self.log(f"{'='*80}", to_console=False)
+        self.log(f"Model: {model_path}", to_console=False)
+        self.log(f"Return Code: {return_code}", to_console=False)
+
+        self.log("\n--- ALLOY STDOUT ---", to_console=False)
+        self.log(stdout if stdout else "(empty)", to_console=False)
+
+        self.log("\n--- ALLOY STDERR ---", to_console=False)
+        self.log(stderr if stderr else "(empty)", to_console=False)
+
+        self.log("\n--- ANALYSIS RESULTS ---", to_console=False)
+        import json
+        self.log(json.dumps(analysis, indent=2), to_console=False)
+        self.log(f"{'='*80}\n", to_console=False)
 
     def log_file_update(self, file_path: str, description: str = "Updated"):
         """

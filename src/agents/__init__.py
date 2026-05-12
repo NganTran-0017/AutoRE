@@ -1,5 +1,5 @@
-"""Agent implementations for AutoRE."""
-from .requirement_engineer import RequirementEngineer
-from .evaluator import Evaluator
+"""AutoRE agents (V2 - with SharedRuntimeContext)."""
+from .requirement_engineer import RequirementEngineerRole
+from .evaluator import EvaluatorRole
 
-__all__ = ['RequirementEngineer', 'Evaluator']
+__all__ = ['RequirementEngineerRole', 'EvaluatorRole']
