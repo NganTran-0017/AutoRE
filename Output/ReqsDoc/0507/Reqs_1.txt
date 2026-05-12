@@ -1,0 +1,51 @@
+```
+SYSTEM OVERVIEW
+===============
+The system is a Role-based Access Control (RBAC) environment supporting multiple users, role hierarchies, temporary role delegation, revocation, and concurrent request processing. The system enforces authorization correctness, maintains delegation and permission consistency, and ensures safety and liveness under concurrency. Users have clearance levels (High, Medium, Low), and objects have classification levels (High, Medium, Low). Requests are classified by the highest classification level of affected objects and must comply with user clearance. Higher-clearance users can approve/reject lower-clearance user requests. Delegation and revocation of roles are governed by clearance and administrative rules. The system now requires an Emergency Module to manage exceptional scenarios, altering standard behaviors under specific triggers and constraints. Emergency mode is abstracted as a fixed duration, but may terminate early if both administrators who activated it jointly deactivate it.
+
+PROSPECTIVE FUNCTIONAL REQUIREMENTS
+=======================
+R1: Emergency Trigger
+Exactly two administrators are required, while the system is in Normal mode, to jointly trigger entry into Emergency mode. Only these two participating administrators are considered for subsequent emergency-related requirements.
+
+R2: Emergency Mode Duration
+Emergency mode is active only for a limited (bounded) time, abstracted as a fixed duration but allowing early termination if both participating administrators jointly deactivate Emergency. The system must eventually return to Normal mode.
+
+R3: Emergency Mode Behavior
+R3.1. During Emergency mode, request processing may bypass FIFO order to prioritize and process multiple high-classification requests simultaneously.
+R3.2. During Emergency mode, users may temporarily hold roles that are normally mutually exclusive.
+R3.3. During Emergency mode, administrators who participated in the Emergency trigger temporarily hold emergency privileges.
+
+R4: Post-Emergency Restoration
+R4.1. After Emergency mode ends, emergency privileges must be revoked from the administrators who participated in the Emergency trigger.
+R4.2. After Emergency mode ends, any roles delegated during the Emergency mode must be revoked. Delegated roles from before Emergency mode remain subject to normal expiration or administrator revocation.
+R4.3. After Emergency mode ends, the administrators who participated in the Emergency trigger must update their credentials.
+
+KEY CONCEPTS AND ENTITIES
+==========================
+- User: An individual system actor with a clearance level.
+- Administrator: A user with High clearance and administrative rights.
+- Role: Permission bundle, can be assigned or delegated, may have exclusivity constraints.
+- Delegated Role: A role temporarily held by a user, subject to clearance and expiration/revocation.
+- Emergency Mode: A system state triggered by administrators; temporarily alters standard processing and privilege rules. Emergency mode is of fixed duration but may end early via joint deactivation by both participating administrators.
+- Emergency Privilege: Temporary additional rights granted to the two administrators who jointly triggered Emergency mode, held only during Emergency mode.
+- Request: User action affecting one or more objects, classified by object classification.
+- Object: System resource with a classification level (High/Medium/Low).
+- Mutual Exclusive Roles: Roles not normally allowed to be held simultaneously by the same user.
+- FIFO Queue: The standard request processing order, bypassed in Emergency mode for high-classification requests.
+- Credentials: Authentication or authorization data for administrators, updated after emergencies (only by those who participated in the Emergency trigger).
+
+ASSUMPTIONS REQUIRING CLARIFICATION
+====================================
+None. All prior assumptions have been clarified.
+
+CONSTRAINTS
+===========
+- Emergency mode can only be triggered from Normal mode and requires exactly two administrators.
+- Emergency mode is time-bounded, abstracted as a fixed duration but may terminate early if both participating administrators jointly deactivate Emergency; the system must eventually return to Normal mode.
+- FIFO ordering for request processing can be bypassed only during Emergency mode, and only for high-classification requests.
+- Mutual exclusivity of roles is suspended only during Emergency mode.
+- Emergency privileges are held only by the two administrators who triggered Emergency mode, only during Emergency mode, and must be revoked after.
+- Roles delegated during Emergency mode must be revoked when Emergency mode ends; roles delegated prior to Emergency mode are not automatically revoked.
+- Only the administrators who participated in the Emergency trigger are required to update their credentials after Emergency mode ends.
+```
