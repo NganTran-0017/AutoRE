@@ -96,19 +96,23 @@ class InterpretResults(LessonAwareAction):
         # Check if there are syntax errors
         analysis = analyzer_results.get('analysis', {})
         has_syntax_errors = analysis.get('has_syntax_errors', False)
-        
+
         model_context = alloy_model
         if has_syntax_errors:
             # When there are syntax errors, the code snippets are already in analyzer_results
             # So we don't need to repeat them here - just omit the model
             model_context = "(Full model omitted - syntax errors shown in Analyzer Results above)"
 
+        # Format satisfying instances for review (when hard metrics pass)
+        satisfying_instances_str = self._format_satisfying_instances(analysis)
+
         # Render base prompt
         prompt = self.render_prompt(
             analyzer_results=results_str,
             requirements_document=requirements_document,
             alloy_model=model_context,  # Use placeholder or full model
-            user_preferences=user_prefs
+            user_preferences=user_prefs,
+            satisfying_instances=satisfying_instances_str
         )
 
         # Conditionally append special case sections based on analyzer results
@@ -119,16 +123,20 @@ class InterpretResults(LessonAwareAction):
         # Include InterpretCounterexample section if counterexamples exist
         if has_counterexamples:
             counterexample_section = self.context.prompt_manager.get_section(
-                "Evaluator", 
+                "Evaluator",
                 "InterpretCounterexample"
             )
             prompt = prompt + "\n\n" + counterexample_section
 
-        # Include InterpretSatInstance section if success state
-        # Conditions: no syntax errors, no counterexamples, all run commands SAT
-        if not has_syntax_errors and no_counterexamples and no_unsat_run_commands:
+        # Include InterpretSatInstance section if hard metrics pass
+        # Conditions: no syntax errors, no counterexamples, all positive runs satisfied
+        positive_runs = analysis.get('positive_run_commands', 0)
+        satisfied_positive = analysis.get('satisfied_positive_runs', 0)
+        all_positive_runs_satisfied = (positive_runs > 0 and positive_runs == satisfied_positive)
+
+        if not has_syntax_errors and no_counterexamples and all_positive_runs_satisfied:
             sat_instance_section = self.context.prompt_manager.get_section(
-                "Evaluator", 
+                "Evaluator",
                 "InterpretSatInstance"
             )
             prompt = prompt + "\n\n" + sat_instance_section
@@ -292,6 +300,55 @@ class InterpretResults(LessonAwareAction):
                 import json
                 instance_data = comprehensive_instance.get('data', {})
                 lines.append(json.dumps(instance_data, indent=2))
+
+        return "\n".join(lines)
+
+    def _format_satisfying_instances(self, analysis: Dict[str, Any]) -> str:
+        """
+        Format satisfying instances for Evaluator review.
+
+        Extracts up to 3 sample instances (prioritizing comprehensive instance)
+        for quality assessment.
+
+        Args:
+            analysis: Analysis dictionary from alloy_executor
+
+        Returns:
+            Formatted string with sample instances
+        """
+        import json
+
+        sample_instances = analysis.get('sample_instances', [])
+        comprehensive = analysis.get('comprehensive_instance')
+
+        if not sample_instances:
+            return "(No satisfying instances available for review)"
+
+        lines = []
+        lines.append("The following satisfying instances are provided for quality assessment:")
+        lines.append("")
+
+        for idx, inst in enumerate(sample_instances, 1):
+            cmd_name = inst.get("command_name", "Unknown")
+            is_comprehensive = (inst == comprehensive)
+            marker = " [COMPREHENSIVE - includes All_Requirements]" if is_comprehensive else ""
+
+            lines.append(f"Instance {idx}: {cmd_name}{marker}")
+            lines.append(f"File: {inst.get('file', 'Unknown')}")
+            lines.append("")
+
+            # Include instance data (limited to avoid token bloat)
+            instance_data = inst.get('data', {})
+            data_str = json.dumps(instance_data, indent=2)
+
+            # Limit each instance to ~1000 characters
+            if len(data_str) > 1000:
+                data_str = data_str[:1000] + "\n... (truncated for brevity)"
+
+            lines.append(data_str)
+            lines.append("")
+            lines.append("-" * 80)
+            lines.append("")
 
         return "\n".join(lines)
 

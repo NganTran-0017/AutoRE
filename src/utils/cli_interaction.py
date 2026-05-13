@@ -284,13 +284,13 @@ class CLIInteraction:
                     # Cancel alarm since we got input
                     signal.alarm(0)
 
-                    # Check for extension command
-                    if line.strip().upper() == 'EXTEND':
+                    # Check for extension command (case-sensitive)
+                    if line.strip() == 'EXTEND':
                         self._handle_extension()
                         continue
 
-                    # Check for end marker
-                    if line.strip().upper() == 'END':
+                    # Check for end marker (case-sensitive)
+                    if line.strip() == 'END':
                         break
 
                     lines.append(line)

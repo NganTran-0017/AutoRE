@@ -383,19 +383,30 @@ class AlloyExecutor:
             "unsat_run_commands": [],      # run UNSAT = overconstraint (BAD)
             "unsat_check_commands": [],    # check UNSAT = assertion holds (GOOD)
             "total_run_commands": 0,       # Total run commands
-            "total_check_commands": 0      # Total check commands
+            "total_check_commands": 0,     # Total check commands
+            "positive_run_commands": 0,    # Positive run commands (excluding "negative" test cases)
+            "satisfied_positive_runs": 0,  # Positive runs with SAT result
+            "comprehensive_instance": None,# Most comprehensive instance (All_Requirements or last)
+            "sample_instances": []         # Up to 3 instances for Evaluator review
         }
 
         # Count total commands and categorize UNSAT by type
         for cmd_name, cmd_info in command_map.items():
             cmd_type = cmd_info["type"]
-            
+
             # Count totals
             if cmd_type == "run":
                 analysis["total_run_commands"] += 1
+
+                # Track positive run commands (exclude "negative" test cases)
+                is_negative = "negative" in cmd_name.lower()
+                if not is_negative:
+                    analysis["positive_run_commands"] += 1
+                    if cmd_info["result"] == "SAT":
+                        analysis["satisfied_positive_runs"] += 1
             elif cmd_type == "check":
                 analysis["total_check_commands"] += 1
-            
+
             # Categorize UNSAT commands
             if cmd_info["result"] == "UNSAT":
                 unsat_entry = {
@@ -403,7 +414,7 @@ class AlloyExecutor:
                     "name": cmd_name,
                     "type": cmd_type
                 }
-                
+
                 if cmd_type == "run":
                     # run UNSAT = overconstraint (BAD)
                     analysis["unsat_run_commands"].append(unsat_entry)
@@ -481,6 +492,29 @@ class AlloyExecutor:
                     "type": "error",
                     "error": str(e)
                 })
+
+        # Identify comprehensive instance (All_Requirements or last run)
+        for inst in analysis["instances"]:
+            cmd_name = inst["command_name"].lower()
+            if "all_requirements" in cmd_name or "all_" in cmd_name:
+                analysis["comprehensive_instance"] = inst
+                break
+
+        # If no All_Requirements found, use the last instance
+        if not analysis["comprehensive_instance"] and analysis["instances"]:
+            analysis["comprehensive_instance"] = analysis["instances"][-1]
+
+        # Select up to 3 sample instances for Evaluator review
+        # Prioritize: comprehensive + up to 2 others
+        sample_set = []
+        if analysis["comprehensive_instance"]:
+            sample_set.append(analysis["comprehensive_instance"])
+
+        for inst in analysis["instances"]:
+            if inst != analysis["comprehensive_instance"] and len(sample_set) < 3:
+                sample_set.append(inst)
+
+        analysis["sample_instances"] = sample_set
 
         return analysis
 

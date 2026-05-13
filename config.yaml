@@ -40,4 +40,4 @@ user_interaction:
   mode: "cli"  # CLI-based interaction
   response_timeout: 300  # seconds (5 minutes) - system proceeds with no feedback after timeout
   multiline_input: true  # Allow multi-line input (end with 'END')
-  log_directory: "outputlog"  # Directory for session logs (format: MMDDYY.log)
+  log_directory: "Output/outputlog"  # Directory for session logs (format: MMDDYY.log)

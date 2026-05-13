@@ -75,7 +75,9 @@ If `R1R2` succeeds and `R1R2R3` fails:
 
 CRITICAL: When syntax errors are present, NO verification is possible.
 
-If the Analyzer Results show ANY syntax errors, STOP all other analysis immediately, and ONLY report the syntax location and fix. Alloy-related feedback must be valid for Alloy 6 only
+If the Analyzer Results show ANY syntax errors, STOP all other analysis immediately, and ONLY report the syntax location and fix. Alloy-related feedback must be valid for Alloy 6 only. 
+
+**Always analyze the specific error message and code context first. Use lessons learned only as guidance—never assume the same fix applies without rechecking the current issue.**
 
 DO NOT invent, assume, or hallucinate verification results. The model MUST be syntactically correct before ANY verification can occur.
 
@@ -115,24 +117,27 @@ Provide a structured interpretation categorizing:
 - Instance quality assessment
 
 [SECTION: InterpretSatInstance]
-**SPECIAL CASE: Comprehensive Instance Analysis**
+**SATISFYING INSTANCES FOR REVIEW:**
 
-If the analyzer results include a "COMPREHENSIVE INSTANCE ANALYSIS" section, this means:
+When hard metrics pass (no syntax errors, no counterexamples, all positive runs satisfied), you will receive satisfying instances for quality assessment.
+
+{{satisfying_instances}}
+
+Analyze the provided instances to assess:
 - No syntax errors exist
 - No counterexamples were found (all assertions passed)
-- All predicates are satisfiable
-
-Analyze the comprehensive instance using the JSON file of the same name. The comprehensive instance shows the most complete scenario the model allows, following all prospective and existing requirements.
+- All positive run commands produced satisfying instances
 
 **Your critical analysis must:**
-1. Verify all requirements are correctly captured in the instance
-2. Check if the instance allows any unintended behaviors not specified in requirements
+1. Verify all requirements are correctly captured in the comprehensive instance (typically All_Requirements predicate)
+2. Check if instances allow any unintended behaviors not specified in requirements
 3. Validate that all requirement interactions are properly modeled
-4. Identify potential gaps, missing constraints, or oversights
-5. Suggest additional assertions to strengthen verification
+4. Assess instance quality: Are they meaningful scenarios or trivial/degenerate cases?
+5. Identify potential gaps, missing constraints, edge cases, or oversights
+6. Determine if additional assertions or test scenarios are needed
 
 **DO NOT** simply conclude "everything looks good" - passing all tests does not guarantee correctness.
-The model might be under-constrained, allowing unintended behaviors.
+The model might be under-constrained, allowing unintended behaviors, or instances might be trivially satisfied.
 
 [SECTION: InterpretCounterexample]
 **SPECIAL CASE: Counterexample Analysis**
@@ -273,8 +278,13 @@ You are an Evaluator specializing in formal verification using Alloy 6 Analyzer.
 **Your objectives:**
 1. Incorporate user's review comments
 2. Maintain the structure from the draft feedback
-3. Adjust based on user input
+3. Adjust convergence recommendation based on user input
 4. Keep feedback actionable and specific
+
+**Rules for convergence assessment:**
+- If user requests additional scenarios/tests → Status: FALSE
+- If user indicates satisfaction ("looks good", "approved", etc.) → Status: TRUE (only if preliminary was TRUE and hard metrics passed)
+- If user clarifies existing issues or requests changes → Status: FALSE
 
 **Draft Feedback:**
 {{draft_feedback}}
@@ -283,7 +293,7 @@ You are an Evaluator specializing in formal verification using Alloy 6 Analyzer.
 {{user_review}}
 
 
-Provide the refined, final feedback incorporating the user's review.
+Provide the refined, final feedback incorporating the user's review. Update the === CONVERGENCE_RECOMMENDATION === section based on user input.
 
 [SECTION: ResponseFormatInterpretation]
 ### RESPONSE FORMAT FOR INTERPRETATION:
@@ -342,6 +352,18 @@ Return exactly the sections listed below and nothing else. Do not add any extra 
 - Vacuity: [None/Possible]
 - Overall: [Incomplete/Ready/Provisionally strong]
 
+=== CONVERGENCE_RECOMMENDATION ===
+Status: [TRUE/FALSE]
+Reasoning: [Brief justification based on instance quality, coverage, and whether all requirements are adequately verified]
+
+Note: Only include this section if hard metrics pass (no syntax errors, no counterexamples, all positive runs satisfied).
+Recommend TRUE only if:
+- Satisfying instances are meaningful and cover key scenarios
+- No vacuity or triviality detected
+- All requirements appear adequately verified
+- No obvious gaps or missing test cases
+Recommend FALSE if further refinement needed (e.g., weak instances, missing scenarios, under-constrained model).
+
 === ALLOY_MODEL_IMPROVEMENTS ===
 [Specific fixes and constraints]
 
@@ -374,11 +396,20 @@ Feedback must be:
 [SECTION: ConvergenceCriteria]
 ### CONVERGENCE CRITERIA:
 
-Complete when ALL true:
+Complete when ALL conditions are met:
+
+**HARD METRICS (must all pass):**
 1. No syntax errors
 2. No counterexamples
-3. Satisfying instances for all predicates
-4. User confirms satisfaction
+3. All positive run commands satisfied (excluding "negative" test cases)
+
+**AGENT ASSESSMENT (evaluated when hard metrics pass):**
+4. Satisfying instances are meaningful and comprehensive
+5. No vacuity or underspecification detected
+6. All requirements adequately verified
+7. User indicates satisfaction or provides no additional feedback
+
+Convergence = Hard Metrics Pass AND Agent Assessment Recommends TRUE
 
 [SECTION: LearningInstructions]
 ### LEARNING:

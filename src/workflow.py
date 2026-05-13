@@ -213,21 +213,29 @@ class AutoREWorkflow:
                 self.logger.log(f"Iteration {iteration}/{effective_max}")
                 self.logger.log(f"{'=' * 80}\n")
 
-                # Step 4: Evaluate model (evaluates model from current iteration)
-                evaluation_result = await self._step4_evaluate_model()
+                # Step 4: Evaluate model - check HARD METRICS
+                hard_metrics_pass = await self._step4_evaluate_model()
 
                 # Check if model file was found
-                if evaluation_result is None:
+                if hard_metrics_pass is None:
                     self.logger.log("\n❌ Workflow terminated: Model file not found")
                     break
 
-                # Check if verification is complete
-                if evaluation_result:
+                # Step 5-6: Generate feedback and get user input (includes agent assessment)
+                feedback_result = await self._step5_6_generate_feedback_and_get_user_input()
+
+                # HYBRID CONVERGENCE DECISION: Hard Metrics AND Agent Assessment
+                if hard_metrics_pass and feedback_result["final_convergence"]:
                     self.logger.log("\n✅ Verification complete! All criteria met.")
+                    self.logger.log("  Hard Metrics: ✓ Passed")
+                    self.logger.log("  Agent Assessment: ✓ Converged")
                     break
 
-                # Step 5-6: Generate feedback and get user input
-                await self._step5_6_generate_feedback_and_get_user_input()
+                # Convergence not met - continue refinement
+                if not hard_metrics_pass:
+                    self.logger.log("\n⚠ Hard metrics not satisfied - continuing refinement")
+                elif not feedback_result["final_convergence"]:
+                    self.logger.log("\n⚠ Agent assessment: further refinement needed")
 
                 # Increment iteration counter before updating requirements and model
                 self.context.next_iteration()
@@ -470,15 +478,19 @@ class AutoREWorkflow:
 
         print("✓ Evaluation complete")
 
-        # Check convergence - analysis results are nested under 'analysis' key
+        # Check HARD METRICS - analysis results are nested under 'analysis' key
         analysis = results.get('analysis', {})
         no_syntax_errors = not analysis.get('has_syntax_errors', False)
         no_counterexamples = not analysis.get('has_counterexamples', False)
-        has_instances = analysis.get('has_satisfying_instances', False)
+
+        # NEW: Check all positive runs satisfied (exclude "negative" test cases)
+        positive_runs = analysis.get('positive_run_commands', 0)
+        satisfied_positive = analysis.get('satisfied_positive_runs', 0)
+        all_positive_runs_satisfied = (positive_runs > 0 and positive_runs == satisfied_positive)
 
         print(f"  Syntax: {'✓ OK' if no_syntax_errors else '✗ Errors'}")
         print(f"  Counterexamples: {'✓ None' if no_counterexamples else '✗ Found'}")
-        print(f"  Instances: {'✓ Found' if has_instances else '✗ None'}")
+        print(f"  Positive Runs: {satisfied_positive}/{positive_runs} satisfied")
 
         # Show syntax error details if present
         if not no_syntax_errors:
@@ -490,11 +502,20 @@ class AutoREWorkflow:
                 else:
                     print(f"    - {err}")
 
-        # Convergence requires user satisfaction too
-        return no_syntax_errors and no_counterexamples and has_instances
+        # Hard metrics check (agent assessment happens later in workflow)
+        hard_metrics_pass = no_syntax_errors and no_counterexamples and all_positive_runs_satisfied
 
-    async def _step5_6_generate_feedback_and_get_user_input(self):
-        """Steps 5-6: Generate feedback and get user review."""
+        return hard_metrics_pass
+
+    async def _step5_6_generate_feedback_and_get_user_input(self) -> dict:
+        """
+        Steps 5-6: Generate feedback and get user review.
+
+        Returns:
+            dict with 'user_provided_feedback': bool, 'final_convergence': bool
+        """
+        import re
+
         print("\n📝 Step 5-6: Generating feedback...")
 
         interpretation = self.context.artifacts.get_latest_evaluation()
@@ -533,6 +554,14 @@ class AutoREWorkflow:
                 user_review=user_review
             )
 
+            # Parse final convergence from refined feedback
+            convergence_match = re.search(
+                r'===\s*CONVERGENCE_RECOMMENDATION\s*===.*?Status:\s*(TRUE|FALSE)',
+                final_feedback,
+                re.IGNORECASE | re.DOTALL
+            )
+            final_convergence = convergence_match.group(1).upper() == "TRUE" if convergence_match else False
+
             # Update artifacts
             self.context.artifacts.store_feedback(
                 self.context.iteration.current,
@@ -541,7 +570,7 @@ class AutoREWorkflow:
 
             # Save feedback to disk
             self.context.file_manager.save_feedback(
-                {"feedback": final_feedback},
+                {"feedback": final_feedback, "final_convergence": final_convergence},
                 iteration=self.context.iteration.current
             )
 
@@ -553,12 +582,25 @@ class AutoREWorkflow:
             )
 
             print("✓ Feedback refined based on user input")
+
+            return {
+                "user_provided_feedback": True,
+                "final_convergence": final_convergence
+            }
         else:
-            # No user feedback - skip RefineFeedback action and use draft as final
+            # No user feedback - skip RefineFeedback, use preliminary recommendation from draft
             if user_review is None:
                 print("✓ No user feedback provided (timeout) - using draft feedback")
             else:
                 print("✓ No user feedback provided - using draft feedback")
+
+            # Parse preliminary convergence from draft feedback
+            convergence_match = re.search(
+                r'===\s*CONVERGENCE_RECOMMENDATION\s*===.*?Status:\s*(TRUE|FALSE)',
+                draft_feedback,
+                re.IGNORECASE | re.DOTALL
+            )
+            preliminary_convergence = convergence_match.group(1).upper() == "TRUE" if convergence_match else False
 
             # Store draft as final feedback
             self.context.artifacts.store_feedback(
@@ -568,9 +610,14 @@ class AutoREWorkflow:
 
             # Save feedback to disk
             self.context.file_manager.save_feedback(
-                {"feedback": draft_feedback},
+                {"feedback": draft_feedback, "final_convergence": preliminary_convergence},
                 iteration=self.context.iteration.current
             )
+
+            return {
+                "user_provided_feedback": False,
+                "final_convergence": preliminary_convergence
+            }
 
     def _extract_requirement_updates(self, feedback: str) -> Optional[str]:
         """

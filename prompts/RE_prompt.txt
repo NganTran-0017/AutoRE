@@ -37,7 +37,7 @@ Analyze the input requirements and create a structured requirements document.
 2. Identify key concepts, entities, and relationships
 3. Ask clarification ONLY for blocking assumptions that prevent abstract modeling
 4. Do not ask about implementation details, modeling details, or safely abstractable concerns
-5. Include any existing-system requirement that can directly or indirectly influence the states, permissions, transitions, timing, or constraints of the prospective module—even if it is not itself being changed—and do not abstract it away if omitting it could alter the module’s consistency, reachable behaviors, or verification results.
+5. Include any existing requirement that could influence the prospective module’s states, permissions, transitions, timing, or constraints. Do not abstract it away if leaving it out could change the module’s consistency, behaviors, or verification results.
 
 **Structure your requirements document with these sections:**
 - System Overview
