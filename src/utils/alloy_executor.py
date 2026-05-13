@@ -175,6 +175,102 @@ class AlloyExecutor:
 
         return command_map, syntax_errors
 
+    def _find_containing_block(
+        self, 
+        file_path: str, 
+        line_num: int
+    ) -> Optional[Tuple[int, int, str]]:
+        """
+        Find the complete syntactic block containing the error using keyword-to-keyword boundaries.
+        
+        Args:
+            file_path: Path to the .als file
+            line_num: Error line number (1-indexed as reported by Alloy)
+        
+        Returns:
+            (start_line, end_line, block_type) or None if not found
+            - start_line: 1-indexed line where block starts
+            - end_line: 1-indexed line where block ends
+            - block_type: keyword name with block name (e.g., "pred EmergencyCoverage_Positive")
+        """
+        import re
+        
+        BLOCK_KEYWORDS = ['pred', 'fact', 'fun', 'sig', 'assert', 'enum']
+        BOUNDARY_KEYWORDS = ['pred', 'fact', 'fun', 'sig', 'assert', 'enum', 'run', 'check']
+        MAX_BLOCK_SIZE = 100
+        
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                lines = f.readlines()
+            
+            # Error on first line - no backward search possible
+            if line_num <= 1:
+                return None
+            
+            # Convert to 0-indexed
+            error_idx = line_num - 1
+            
+            # Step 1: Search BACKWARD from error line to find closest block keyword
+            keyword_pattern = re.compile(r'^\s*(' + '|'.join(BLOCK_KEYWORDS) + r')\b')
+            block_start_idx = None
+            block_keyword = None
+            block_name = None
+            
+            for i in range(error_idx, -1, -1):
+                match = keyword_pattern.match(lines[i])
+                if match:
+                    block_start_idx = i
+                    block_keyword = match.group(1)
+                    # Extract block name if present (e.g., "pred MyPredicate" -> "MyPredicate")
+                    name_match = re.match(r'^\s*\w+\s+(\w+)', lines[i])
+                    if name_match:
+                        block_name = name_match.group(1)
+                    break
+            
+            if block_start_idx is None:
+                return None  # No block keyword found
+            
+            # Step 2: Search FORWARD from block start to find next boundary keyword
+            # Use BOUNDARY_KEYWORDS (includes run/check) to find where the block ends
+            boundary_pattern = re.compile(r'^\s*(' + '|'.join(BOUNDARY_KEYWORDS) + r')\b')
+            block_end_idx = None
+            
+            for i in range(block_start_idx + 1, len(lines)):
+                if boundary_pattern.match(lines[i]):
+                    block_end_idx = i - 1  # End just before next keyword
+                    break
+            
+            if block_end_idx is None:
+                # No next keyword found - use end of file
+                block_end_idx = len(lines) - 1
+            
+            # Step 3: Trim trailing blank lines and comments
+            # Comments between blocks should not be included in either block
+            while block_end_idx > block_start_idx:
+                line = lines[block_end_idx].strip()
+                # Stop trimming if we hit a non-blank, non-comment line
+                if line != '' and not line.startswith('//'):
+                    break
+                block_end_idx -= 1
+            
+            # Check block size
+            block_size = block_end_idx - block_start_idx + 1
+            if block_size > MAX_BLOCK_SIZE:
+                return None  # Block too large, fallback to context lines
+            
+            # Create block type description
+            if block_name:
+                block_type = f"{block_keyword} {block_name}"
+            else:
+                block_type = block_keyword
+            
+            # Return 1-indexed line numbers
+            return (block_start_idx + 1, block_end_idx + 1, block_type)
+            
+        except Exception as e:
+            # If anything fails, return None to fallback to context lines
+            return None
+
     def _extract_code_snippet(
         self, 
         file_path: str, 
@@ -184,12 +280,14 @@ class AlloyExecutor:
     ) -> str:
         """
         Extract code snippet from file with error marker.
+        First attempts to extract the complete syntactic block (pred, fact, fun, sig, assert, enum).
+        Falls back to ±context_lines if block extraction fails or block is too large.
         
         Args:
             file_path: Path to the .als file
             line_num: Line number (1-indexed as reported by Alloy)
             col_num: Column number (1-indexed as reported by Alloy)
-            context_lines: Number of lines before/after to include
+            context_lines: Number of lines before/after to include (fallback only)
         
         Returns:
             Formatted code snippet with error marker
@@ -205,29 +303,51 @@ class AlloyExecutor:
             if line_idx < 0 or line_idx >= len(lines):
                 return f"(Line {line_num} is out of range in file)"
             
-            # Calculate range
-            start_idx = max(0, line_idx - context_lines)
-            end_idx = min(len(lines), line_idx + context_lines + 1)
+            # Try to find complete block first
+            block_info = self._find_containing_block(file_path, line_num)
             
-            # Build snippet
-            snippet_lines = []
-            snippet_lines.append(f"CODE CONTEXT (lines {start_idx + 1}-{end_idx}):")
-            
-            for i in range(start_idx, end_idx):
-                line_content = lines[i].rstrip('\n')
-                snippet_lines.append(f"{i + 1:3d}: {line_content}")
+            if block_info:
+                # Extract complete block
+                start_line, end_line, block_type = block_info
+                start_idx = start_line - 1
+                end_idx = end_line
                 
-                # Add error marker right after the error line
-                if i == line_idx:
-                    # Create marker showing column position
-                    # Account for line number prefix (e.g., "40: ")
-                    prefix_len = len(f"{i + 1:3d}: ")
-                    # Column is 1-indexed, so col_num - 1 gives 0-indexed position
-                    marker_pos = prefix_len + col_num - 1
-                    marker = ' ' * marker_pos + '^^ ERROR at column ' + str(col_num)
-                    snippet_lines.append(marker)
+                snippet_lines = []
+                snippet_lines.append(f"CODE CONTEXT - COMPLETE BLOCK: {block_type} (lines {start_line}-{end_line}):")
+                
+                for i in range(start_idx, end_idx):
+                    line_content = lines[i].rstrip('\n')
+                    snippet_lines.append(f"{i + 1:3d}: {line_content}")
+                    
+                    # Add error marker right after the error line
+                    if i == line_idx:
+                        prefix_len = len(f"{i + 1:3d}: ")
+                        marker_pos = prefix_len + col_num - 1
+                        marker = ' ' * marker_pos + '^^ ERROR at column ' + str(col_num)
+                        snippet_lines.append(marker)
+                
+                return '\n'.join(snippet_lines)
             
-            return '\n'.join(snippet_lines)
+            else:
+                # Fallback to context lines approach
+                start_idx = max(0, line_idx - context_lines)
+                end_idx = min(len(lines), line_idx + context_lines + 1)
+                
+                snippet_lines = []
+                snippet_lines.append(f"CODE CONTEXT (lines {start_idx + 1}-{end_idx}):")
+                
+                for i in range(start_idx, end_idx):
+                    line_content = lines[i].rstrip('\n')
+                    snippet_lines.append(f"{i + 1:3d}: {line_content}")
+                    
+                    # Add error marker right after the error line
+                    if i == line_idx:
+                        prefix_len = len(f"{i + 1:3d}: ")
+                        marker_pos = prefix_len + col_num - 1
+                        marker = ' ' * marker_pos + '^^ ERROR at column ' + str(col_num)
+                        snippet_lines.append(marker)
+                
+                return '\n'.join(snippet_lines)
             
         except FileNotFoundError:
             return f"(Could not read file: {file_path})"
