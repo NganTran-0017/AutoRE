@@ -88,6 +88,45 @@ class FileManager:
         with open(latest, 'r') as f:
             return f.read()
 
+    def get_latest_requirements_file(self) -> Optional[Path]:
+        """
+        Get the path to the latest requirements document file.
+
+        Returns:
+            Path to latest requirements file or None
+        """
+        files = list(self.reqs_dir.glob("Reqs_*.txt"))
+        if not files:
+            return None
+        latest = max(files, key=lambda p: int(p.stem.split('_')[1]))
+        return latest
+
+    def get_latest_requirements_up_to(self, max_iteration: int) -> Optional[int]:
+        """
+        Get the latest requirements file iteration number up to max_iteration.
+        
+        Args:
+            max_iteration: Maximum iteration to consider
+            
+        Returns:
+            Iteration number of latest requirements file, or None if not found
+        """
+        files = list(self.reqs_dir.glob("Reqs_*.txt"))
+        if not files:
+            return None
+        
+        # Get all iterations <= max_iteration
+        valid_iterations = [
+            int(f.stem.split('_')[1]) 
+            for f in files 
+            if int(f.stem.split('_')[1]) <= max_iteration
+        ]
+        
+        if not valid_iterations:
+            return None
+            
+        return max(valid_iterations)
+
     def save_alloy_model(self, content: str, iteration: int) -> Path:
         """
         Save Alloy model, extracting code from markdown fences if present.

@@ -87,7 +87,7 @@ Create a formal Alloy 6 model from the requirements document.
 1. Translate requirements into formal Alloy 6 model at abstract level.
 2. Model existing system only to extent needed for verification context.
 3. Model all prospective behaviors, properties, and interactions.
-4. Use facts for existing system assumptions, structural rules, and enforced semantics. Do not encode a requirement as a fact unless it is intentionally assumed.
+4. Use facts for existing system assumptions, structural rules, and enforced semantics. Do not encode a requirement as a fact unless it is intentionally assumed to be true at all time.
 5. Use predicates for operations, scenarios, transitions, and edge cases.
 6. Use assertions for properties to verify.
 7. Keep model abstract, syntactically valid, focused on verifying the prospective behaviors and properties.
@@ -101,9 +101,14 @@ The model must be syntactically valid Alloy 6.
 2. Facts: Encode existing-system assumptions, baseline rules, structural constraints
 
 3. Predicates: Define scenarios and transitions, verify with `run`
-   - Name incremental predicates: R1, R1R2, R1R2R3, etc.
-   - Name most comprehensive predicate: All_Requirements
-   - Example: `run R1`, `run R1R2`, `run All_Requirements`
+   - Create an empty `baseline` predicate to verify the existing system requirements (which are modeled as facts)
+   - Name prospective requirement predicates incrementally: R1, R1R2, R1R2R3, etc.
+   - Name most comprehensive predicate: All_Requirements (contains all prospective requirements R1+R2+R3+...)
+   - Run commands MUST follow this order:
+     1. `run baseline` - verify existing system (facts) alone is satisfiable
+     2. `run All_Requirements` - most comprehensive predicate first
+     3. `run R1`, `run R1R2`, `run R1R2R3`, etc. - incremental predicates for localization
+     4. `check assert...` - assertions to verify properties
 
 4. Assertions: State properties to verify, check with `check`
    - Name assertions with a prefix `assert[name]`
@@ -135,16 +140,19 @@ The model must be syntactically valid Alloy 6.
 
 
 [SECTION: UpdateAlloyModel]
+### ROLE:
+You are a Requirement Engineer specializing in formal requirements modeling and Alloy 6 specification. You update Alloy models based on feedback to verify whether the prospective component's requirements are internally consistent and consistent with existing system constraints.
+
 ### TASK: UPDATE ALLOY MODEL
 
 Revise the existing Alloy model based on Evaluator feedback.
 
 **Your objectives:**
-1. Address syntax errors from Alloy Analyzer
-2. Fix counterexamples by adding/adjusting constraints
-3. Resolve underspecification issues
+1. Address issues and concerns based on the given feedback
+2. Only modify the necessary parts and keep the rest of the current Alloy model unchanged.
+3. 
 4. Maintain consistency with latest requirements
-5. Keep model abstract, syntactically valid (Alloy 6 compatible), focused on verification
+5. Follow modeling guideline and keep the model abstract, syntactically valid with Alloy 6, focused on verification
 
 ### ALLOY MODELING GUIDELINES:
 
@@ -155,9 +163,14 @@ Model STRUCTURE, BEHAVIOR, and CONSTRAINTS, not implementation.
 2. Facts: Encode existing-system assumptions, baseline rules, structural constraints
 
 3. Predicates: Define scenarios and transitions, verify with `run`
-   - Name incremental predicates: R1, R1R2, R1R2R3, etc.
-   - Name most comprehensive predicate: All_Requirements
-   - Example: `run R1`, `run R1R2`, `run All_Requirements`
+   - Create an empty `baseline` predicate to verify the existing system requirements (which are modeled as facts)
+   - Name prospective requirement predicates incrementally: R1, R1R2, R1R2R3, etc.
+   - Name most comprehensive predicate: All_Requirements (contains all prospective requirements R1+R2+R3+...)
+   - Run commands MUST follow this order:
+     1. `run baseline` - verify existing system (facts) alone is satisfiable
+     2. `run All_Requirements` - most comprehensive predicate first
+     3. `run R1`, `run R1R2`, `run R1R2R3`, etc. - incremental predicates for localization
+     4. `check assert...` - assertions to verify properties
 
 4. Assertions: State properties to verify, check with `check`
    - Name assertions with a prefix `assert[name]`
@@ -165,7 +178,7 @@ Model STRUCTURE, BEHAVIOR, and CONSTRAINTS, not implementation.
 5. Best Practices:
    - Prefix with requirement IDs (e.g., fact R1R2, pred R3, assert assertR4)
    - Use Alloy 6 temporal modeling for time/state (var for mutable properties)
-   - Place `open` statements at top
+   - Place all`open` statements at top
    - Verify incrementally with predicates
    - Model negative edge cases, a scenario represents behavior that must be forbidden, as assertions and verify it with `check`, rather than as a predicate that is run for satisfiability.
 
@@ -224,7 +237,33 @@ CONSTRAINTS
 ### RESPONSE FORMAT:
 ```alloy
 // Brief section comments only
-[Alloy 6 code with incremental predicates: R1, R1R2, R1R2R3, ..., All_Requirements]
+[Alloy 6 code with:
+ - Empty baseline predicate named baseline
+ - Incremental predicates: R1, R1R2, R1R2R3, ..., All_Requirements
+ - Run commands in order: baseline, All_Requirements, R1, R1R2, R1R2R3, ..., then checks]
+```
+
+[SECTION: ResponseFormatUpdateAlloyModel]
+### RESPONSE FORMAT FOR MODEL UPDATES:
+When updating an existing model, provide the following information before the updated model code:
+
+```
+=== FIX INTENT ===
+[1 sentence description of what you intend to fix/change and why]
+
+=== SOURCE REFERENCE ===
+[What prompted this update: e.g., "Evaluator feedback: syntax error on line 45", "User clarification Q3_2", "Counterexample in assertDelegation"]
+
+=== EXPECTED IMPACT ===
+satToUnsat: [list run command names expected to become UNSAT, e.g., R1, R2, or "None"]
+unsatToSat: [list run command names expected to become SAT, e.g., R1R2, All_Requirements, or "None"]
+passToFail: [list assertion names expected to start failing, e.g., assertNoConflict, or "None"]
+failToPass: [list assertion names expected to start passing, e.g., assertDelegation, or "None"]
+```
+
+Then provide the updated Alloy model code:
+```alloy
+[Updated Alloy 6 code]
 ```
 
 [SECTION: QualityStandards]

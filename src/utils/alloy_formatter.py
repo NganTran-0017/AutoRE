@@ -18,6 +18,7 @@ def find_most_comprehensive_instance(instances: List[Dict[str, Any]]) -> Optiona
     Priority:
     1. Command name = "All_Requirements"
     2. Command name starts with longest "R" chain (e.g., R1R2R3 > R1R2 > R1)
+    3. Command name = "baseline" (existing system verification)
     4. Last instance
 
     Args:
@@ -49,7 +50,11 @@ def find_most_comprehensive_instance(instances: List[Dict[str, Any]]) -> Optiona
         r_chain_instances.sort(key=lambda x: x[0], reverse=True)
         return r_chain_instances[0][1]
 
-    
+    # Priority 3: Look for "baseline" (existing system)
+    for inst in instances:
+        if inst['command_name'] == 'baseline':
+            return inst
+
     return None
 
 

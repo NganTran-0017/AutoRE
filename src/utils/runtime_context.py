@@ -37,7 +37,7 @@ class SharedRuntimeContext:
     - Temporary prompt construction details
     """
 
-    def __init__(self, project_name: str = "default", logger=None, use_semantic_memory: bool = True):
+    def __init__(self, project_name: str = "default", logger=None, use_semantic_memory: bool = True, config: dict = None):
         """
         Initialize shared runtime context.
 
@@ -45,14 +45,30 @@ class SharedRuntimeContext:
             project_name: Project identifier for isolation
             logger: Optional AutoRELogger instance
             use_semantic_memory: Use ChromaDB for semantic retrieval (default: True)
+            config: Optional configuration dict (loaded from config.yaml)
         """
         self.project_name = project_name
         self.logger = logger
 
+        # Get memory configuration
+        config = config or {}
+        memory_config = config.get('memory', {})
+        dedup_config = memory_config.get('semantic_deduplication', {})
+        agents_config = config.get('agents', {})
+        memory_assistant_config = agents_config.get('memory_assistant', {})
+
+        # Add memory assistant config to dedup config
+        if memory_assistant_config:
+            dedup_config['memory_assistant_config'] = memory_assistant_config
+
         # Initialize memory system (semantic or traditional)
         if use_semantic_memory:
             from .semantic_memory import SemanticMemorySystem
-            self.memory = SemanticMemorySystem(project_name)
+            self.memory = SemanticMemorySystem(
+                project_name,
+                enable_dedup=dedup_config.get('enabled', True),
+                dedup_config=dedup_config
+            )
             self._memory_type = "semantic"
         else:
             self.memory = LongTermMemorySystem(project_name)
@@ -67,6 +83,16 @@ class SharedRuntimeContext:
         self.iteration = IterationTracker()
         self.file_manager = FileManager()
         self.artifacts = ArtifactStore()
+        
+        # Q&A database for tracking user clarifications
+        from .qa_database import QADatabase
+        qa_path = Path(f"memory/{project_name}/qa_database.json")
+        self.qa_database = QADatabase(storage_path=qa_path)
+
+        # Regression log for tracking model evolution
+        from .regression_log import RegressionLog
+        regression_path = Path(f"memory/{project_name}/regression_log.json")
+        self.regression_log = RegressionLog(log_path=regression_path)
 
     def next_iteration(self):
         """Move to next iteration."""

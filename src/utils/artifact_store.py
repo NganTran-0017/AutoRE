@@ -25,6 +25,7 @@ class ArtifactStore:
         self.analyzer_results: Dict[int, Dict[str, Any]] = {}
         self.evaluations: Dict[int, str] = {}
         self.feedback: Dict[int, str] = {}
+        self.pending_questions: Dict[int, List[str]] = {}  # Questions from InterpretResults
 
     # Requirements
     def store_requirements(self, iteration: int, content: str):
@@ -98,6 +99,15 @@ class ArtifactStore:
     def get_feedback(self, iteration: int) -> Optional[str]:
         """Get feedback for specific iteration."""
         return self.feedback.get(iteration)
+
+    # Pending Questions (from InterpretResults for use in GenerateFeedback)
+    def store_pending_questions(self, iteration: int, questions: List[str]):
+        """Store questions from InterpretResults for use in GenerateFeedback."""
+        self.pending_questions[iteration] = questions
+
+    def get_pending_questions(self, iteration: int) -> List[str]:
+        """Get pending questions for iteration."""
+        return self.pending_questions.get(iteration, [])
 
     def get_latest_feedback(self) -> Optional[str]:
         """Get most recent feedback."""

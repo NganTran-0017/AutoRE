@@ -117,7 +117,7 @@ class AutoRELogger:
         self.log(user_input)
         self.log("--- END INPUT ---\n", to_console=False)
 
-    def log_agent_communication(self, agent_name: str, action_name: str, prompt: str, response: str):
+    def log_agent_communication(self, agent_name: str, action_name: str, prompt: str, response: str, iteration: int = None):
         """
         Log agent prompt and response.
 
@@ -126,9 +126,13 @@ class AutoRELogger:
             action_name: Name of the action
             prompt: Prompt sent to LLM
             response: Response from LLM
+            iteration: Optional iteration number
         """
         self.log(f"\n{'='*80}", to_console=False)
-        self.log(f"[{agent_name.upper()}] {action_name}", to_console=False)
+        if iteration is not None:
+            self.log(f"[{agent_name.upper()}] {action_name} - Iteration {iteration}", to_console=False)
+        else:
+            self.log(f"[{agent_name.upper()}] {action_name}", to_console=False)
         self.log(f"{'='*80}", to_console=False)
         self.log("\n--- PROMPT SENT TO LLM ---", to_console=False)
         self.log(prompt, to_console=False)

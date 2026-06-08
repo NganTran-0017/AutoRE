@@ -251,3 +251,180 @@ Feedback must be:
 ### COLLABORATION:
 
 Work iteratively with RE agent. Guide refinement with concrete, pattern-aware feedback.
+
+
+[SECTION: InterpretResults]
+### TASK: INTERPRET VERIFICATION RESULTS
+
+Interpret Alloy Analyzer results in the correct order so later conclusions are not based on an invalid or inconsistent model.
+
+**Analyze results in this order:**
+
+1. Syntax/type errors
+   - Identify the exact location and actual cause in context.
+   - Suggest the smallest Alloy 6-compatible fix that preserves intent.
+   - Do not assume similar errors have the same cause.
+   - Stop here until resolved.
+
+2. Baseline satisfiability
+   - Check whether the baseline facts alone produce a satisfying instance. If unsat, explain the most likely cause.
+  - DO NOT proceed to later analyses until baseline satisfiability is established.
+
+3. **Combined satisfiability**
+   - Check satisfiability of baseline facts + prospective requirement predicates.
+   - If unsat, explain the most likely cause.
+   
+4. **Satisfying-instance sanity**
+   - Once combined satisfiability is established, inspect satisfying instances before trusting assertion results.
+   - Explain the scenario in plain language.
+
+5. **Counterexample analysis**
+   - Only after satisfiability is established and satisfying instances look plausible. 
+
+6. **Vacuity and stronger checks**
+   - Only after all hard metrics pass. 
+   - Detect whether assertions may pass trivially.
+   - Recommend stronger assertions, negative tests, or additional scenarios where needed.
+
+
+**User questions**
+   - Ask only blocking questions about ambiguities, assumptions, or scenarios that affect what should be verified.
+
+**Re-check discipline**
+   - After any proposed repair, require re-checking in this order:
+     1. syntax/type validity if changed,
+     2. baseline satisfiability,
+     3. combined satisfiability,
+     4. satisfying-instance sanity,
+     5. assertions/counterexamples.
+
+**ABSTRACTION GUIDANCE FOR QUESTIONS**
+Ask only when the answer affects **what to verify**, not how to encode or implement it.
+
+Ask ONLY when answer affects WHAT to verify, not HOW to implement or model the requirements.
+
+Ask when:
+- Behavioral ambiguity affects verification
+- Cardinality affects consistency
+- Temporal ordering matters
+- Missing scenarios need confirmation
+
+Don't ask when:
+- Implementation details or modeling choices that don't affect structure
+- Content can be abstracted
+- Multiple answers or different modeling choices lead to isomorphic models
+
+**NOTE**
+   - Make sure your feedback is valid for Alloy 6.
+   - Use lessons learned as reference, not as automatic fixes. 
+   - Analyze the actual Alloy code context before suggesting a repair. Do not assume that repeated error messages have the same cause.
+   - Be explicit when uncertainty remains between model error, requirement issue, missing assumption, underconstraint, overconstraint, or scope/trace limitation.
+
+**Analyzer Results:**
+{{analyzer_results}}
+
+**Current Alloy Model:**
+{{alloy_model}}
+
+**Current Requirements:**
+{{requirements_document}}
+
+**Required output structure**
+For each relevant result, provide:
+1. Result type
+2. Interpretation
+3. Likely cause
+4. Smallest justified next step
+
+
+
+[SECTION: InterpretResults_Old]
+### TASK: INTERPRET VERIFICATION RESULTS
+
+Analyze the Alloy Analyzer results and identify issues.
+
+**Your objectives:**
+1. Check for syntax errors (precise location + fix ). 
+2. Check if the baseline facts generate satisfiable instances.
+3. Check the satisfiability of the baseline facts and the prospective requirement predicates. 
+If it is unsatisfiable, conduct incremental analysis 
+Analyze counterexamples (explain scenario based on the JSON file of the same name + why wrong + suggested repair)
+3. Evaluate unsatisfiable predicates (likely cause + what to relax)
+4. Inspect satisfying instances (explain scenario based on the JSON file of the same name, do they reflect the requirments? do they cover edge cases?)
+5. Detect vacuity (assertions pass trivially? stronger checks needed?)
+6. Use incremental predicate results to localize failures
+7. Formulate user questions (blocking ambiguities, assumption choices, additional scenarios)
+
+**ABSTRACTION GUIDANCE FOR QUESTIONS:**
+
+Ask ONLY when answer affects WHAT to verify, not HOW to implement or model the requirements.
+
+Ask when:
+- Behavioral ambiguity affects verification
+- Cardinality affects consistency
+- Temporal ordering matters
+- Missing scenarios need confirmation
+
+Don't ask when:
+- Implementation details or modeling choices that don't affect structure
+- Content can be abstracted
+- Multiple answers or different modeling choices lead to isomorphic models
+
+**NOTE**
+   - Make sure your feedback is valid for Alloy 6.
+   - Use lessons learned as reference, not as automatic fixes. For each syntax or type error, analyze the actual Alloy code context first and diagnose the specific cause before suggesting a repair. Do not assume that repeated error messages have the same cause; similar type errors may arise from different misuse of relations, multiplicities, joins, scopes, or expressions.
+
+**Analyzer Results:**
+{{analyzer_results}}
+
+**Current Alloy Model:**
+{{alloy_model}}
+
+**Current Requirements:**
+{{requirements_document}}
+
+
+Provide a structured interpretation categorizing:
+- Syntax issues
+- Counterexamples
+- Overconstraints/underspecifications
+- Vacuity concerns
+- Instance quality assessment
+
+
+[SECTION: Regression handling rule]
+After any model fix, compare the new verification results against the immediately previous verified state.
+
+If a previously satisfiable predicate becomes unsatisfiable, or a new counterexample appears, do not assume the new fix is simply wrong.
+Instead:
+
+1. Identify exactly what changed.
+2. Determine whether the new result is:
+   - an expected consequence of removing underconstraint,
+   - an unintended regression introduced by the fix,
+   - or a newly exposed contradiction/ambiguity in the requirements.
+3. Distinguish between:
+   - target-side effects (related to the repaired issue),
+   - and non-target regressions (unrelated behaviors that should have remained valid).
+4. Recommend one of:
+   - keep the fix and revise requirements/assumptions,
+   - refine the fix to preserve prior valid behavior,
+   - weaken or scope the fix,
+   - or split one overloaded constraint into narrower constraints.
+5. Re-run the verification workflow in this order:
+   syntax/type -> baseline satisfiability -> combined satisfiability -> satisfying-instance sanity -> assertions.
+
+   ++++++++++++++++++++++++++++++++++++++++
+   If a repair causes previously satisfiable predicates to become unsatisfiable, or introduces new counterexamples, perform regression analysis before proposing another fix.
+
+For each changed result:
+1. Compare the new result with the previous iteration.
+2. Identify whether the change is:
+   - expected from the intended repair,
+   - an unintended regression,
+   - or a newly exposed requirement inconsistency/ambiguity.
+3. Preserve the repair if it correctly removes unintended behavior, even if it reveals new conflicts.
+4. Refine or narrow the repair if it breaks unrelated previously valid behavior.
+5. Re-run checks in this order:
+   syntax/type -> baseline satisfiability -> combined satisfiability -> satisfying-instance sanity -> assertions.
+6. Report explicitly which results changed from the previous iteration and why.

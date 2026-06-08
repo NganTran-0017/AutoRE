@@ -20,7 +20,13 @@ class SemanticMemorySystem:
     rather than just exact tag matching.
     """
 
-    def __init__(self, project_name: str, embedding_model: str = "all-MiniLM-L6-v2"):
+    def __init__(
+        self,
+        project_name: str,
+        embedding_model: str = "all-MiniLM-L6-v2",
+        enable_dedup: bool = True,
+        dedup_config: Optional[Dict] = None
+    ):
         """
         Initialize semantic memory system.
 
@@ -28,10 +34,23 @@ class SemanticMemorySystem:
             project_name: Project identifier for isolation
             embedding_model: Sentence transformer model for embeddings
                            (default: all-MiniLM-L6-v2 - fast and efficient)
+            enable_dedup: Enable semantic deduplication (default: True)
+            dedup_config: Deduplication configuration dict
         """
         self.project_name = project_name
         self.storage_path = Path(f"memory/{project_name}_semantic/")
         self.storage_path.mkdir(parents=True, exist_ok=True)
+
+        # Deduplication configuration
+        self.enable_dedup = enable_dedup
+        self.dedup_config = dedup_config or {
+            "similarity_threshold": 0.85,
+            "merge_similar_lessons": True,
+            "update_min_length_ratio": 1.1
+        }
+
+        # Initialize MemoryAssistant for merging (lazy loaded)
+        self._memory_assistant = None
 
         # Initialize ChromaDB client
         self.client = chromadb.PersistentClient(
@@ -64,6 +83,112 @@ class SemanticMemorySystem:
             "event": self.events_collection
         }
 
+    @property
+    def memory_assistant(self):
+        """Lazy load MemoryAssistant with config."""
+        if self._memory_assistant is None:
+            from ..actions.memory_assistant_action import MemoryAssistant
+            # Pass memory assistant config if available
+            assistant_config = self.dedup_config.get('memory_assistant_config', {})
+            self._memory_assistant = MemoryAssistant(config=assistant_config)
+        return self._memory_assistant
+
+    def _check_semantic_duplicates(
+        self,
+        content: str,
+        item_type: str,
+        agent: str,
+        action: str
+    ) -> List[Dict]:
+        """
+        Check if semantically similar content already exists.
+
+        Args:
+            content: New content to check
+            item_type: Type of memory (lesson, pattern, event)
+            agent: Agent name
+            action: Action name
+
+        Returns:
+            List of similar items (empty if none found)
+        """
+        collection = self._collection_map.get(item_type)
+        if not collection:
+            return []
+
+        threshold = self.dedup_config.get("similarity_threshold", 0.85)
+
+        try:
+            # Query for similar items
+            results = collection.query(
+                query_texts=[content],
+                n_results=5,
+                where={"$and": [{"agent": agent}, {"action": action}]}
+            )
+
+            similar_items = []
+            if results and results['documents'] and results['documents'][0]:
+                for i, doc in enumerate(results['documents'][0]):
+                    distance = results['distances'][0][i]
+                    similarity = 1.0 - distance
+
+                    if similarity >= threshold:
+                        similar_items.append({
+                            'id': results['ids'][0][i],
+                            'content': doc,
+                            'similarity': similarity,
+                            'metadata': results['metadatas'][0][i]
+                        })
+
+            return similar_items
+
+        except Exception as e:
+            print(f"Warning: Error checking duplicates: {e}")
+            return []
+
+    async def _merge_and_update_lesson(
+        self,
+        existing_id: str,
+        existing_content: str,
+        new_content: str,
+        new_iteration: int
+    ):
+        """
+        Merge two lessons using MemoryAssistant and update existing.
+
+        Args:
+            existing_id: ID of existing lesson
+            existing_content: Content of existing lesson
+            new_content: Content of new lesson
+            new_iteration: Iteration number of new lesson
+        """
+        # Use MemoryAssistant to merge
+        merged = await self.memory_assistant.merge_lessons(existing_content, new_content)
+
+        # Get existing metadata
+        existing = self.lessons_collection.get(ids=[existing_id])
+        if existing and existing['metadatas']:
+            old_metadata = existing['metadatas'][0]
+
+            # Update metadata
+            updated_metadata = {
+                **old_metadata,
+                "updated_iteration": new_iteration,
+                "updated_timestamp": datetime.now().isoformat(),
+                "version": old_metadata.get("version", 1) + 1,
+                "update_reason": "merged_with_new_information"
+            }
+
+            # Delete old entry
+            self.lessons_collection.delete(ids=[existing_id])
+
+            # Add merged lesson
+            self.lessons_collection.add(
+                documents=[merged],
+                metadatas=[updated_metadata],
+                ids=[existing_id]
+            )
+
     def store(
         self,
         content: str,
@@ -74,7 +199,9 @@ class SemanticMemorySystem:
         metadata: Optional[Dict] = None
     ):
         """
-        Store memory item with semantic embedding.
+        Store memory item with semantic deduplication and merging.
+
+        Note: This is a sync wrapper that handles async merging internally.
 
         Args:
             content: The actual content to remember
@@ -84,32 +211,116 @@ class SemanticMemorySystem:
             iteration: Current iteration number
             metadata: Additional arbitrary data
         """
+        import asyncio
+
         collection = self._collection_map.get(item_type)
         if not collection:
             raise ValueError(f"Unknown item_type: {item_type}")
 
-        # Create unique ID
+        # Check for semantic duplicates (only for lessons if dedup enabled)
+        if self.enable_dedup and item_type == "lesson":
+            similar_items = self._check_semantic_duplicates(
+                content, item_type, agent, action
+            )
+
+            if similar_items:
+                most_similar = similar_items[0]
+
+                # Check if new lesson has additional information
+                new_len = len(content.split())
+                existing_len = len(most_similar['content'].split())
+                length_ratio = new_len / existing_len if existing_len > 0 else 1.0
+
+                min_ratio = self.dedup_config.get("update_min_length_ratio", 1.1)
+                merge_enabled = self.dedup_config.get("merge_similar_lessons", True)
+
+                if merge_enabled and length_ratio > min_ratio:
+                    # New lesson has more info - merge with existing (async)
+                    try:
+                        # Run async merge in event loop
+                        loop = asyncio.get_event_loop()
+                        if loop.is_running():
+                            # We're already in an async context - create task
+                            asyncio.create_task(self._merge_and_update_lesson(
+                                existing_id=most_similar['id'],
+                                existing_content=most_similar['content'],
+                                new_content=content,
+                                new_iteration=iteration
+                            ))
+                        else:
+                            # Run in new event loop
+                            asyncio.run(self._merge_and_update_lesson(
+                                existing_id=most_similar['id'],
+                                existing_content=most_similar['content'],
+                                new_content=content,
+                                new_iteration=iteration
+                            ))
+                    except RuntimeError:
+                        # Fallback: simple update without merging
+                        self._simple_update_lesson(
+                            most_similar['id'],
+                            content,  # Use new content as-is
+                            iteration
+                        )
+                    return  # Updated existing, don't store new
+                else:
+                    # Similar but no new info - reject duplicate
+                    return  # Skip storage
+
+        # No duplicate or dedup disabled - store normally
         timestamp = datetime.now().isoformat()
         doc_id = f"{agent}_{action}_{iteration}_{timestamp}"
 
-        # Prepare metadata
         meta = {
             "agent": agent,
             "action": action,
             "iteration": iteration,
             "project": self.project_name,
             "timestamp": timestamp,
-            "type": item_type
+            "type": item_type,
+            "version": 1
         }
         if metadata:
             meta.update(metadata)
 
-        # Store in ChromaDB (automatically creates embeddings)
         collection.add(
             documents=[content],
             metadatas=[meta],
             ids=[doc_id]
         )
+
+    def _simple_update_lesson(
+        self,
+        existing_id: str,
+        new_content: str,
+        new_iteration: int
+    ):
+        """
+        Simple update without async merging (fallback).
+
+        Args:
+            existing_id: ID of existing lesson
+            new_content: New content to use
+            new_iteration: Iteration number
+        """
+        existing = self.lessons_collection.get(ids=[existing_id])
+        if existing and existing['metadatas']:
+            old_metadata = existing['metadatas'][0]
+
+            updated_metadata = {
+                **old_metadata,
+                "updated_iteration": new_iteration,
+                "updated_timestamp": datetime.now().isoformat(),
+                "version": old_metadata.get("version", 1) + 1,
+                "update_reason": "updated_with_new_information"
+            }
+
+            self.lessons_collection.delete(ids=[existing_id])
+            self.lessons_collection.add(
+                documents=[new_content],
+                metadatas=[updated_metadata],
+                ids=[existing_id]
+            )
 
     def retrieve_similar(
         self,

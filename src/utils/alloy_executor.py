@@ -314,39 +314,45 @@ class AlloyExecutor:
                 
                 snippet_lines = []
                 snippet_lines.append(f"CODE CONTEXT - COMPLETE BLOCK: {block_type} (lines {start_line}-{end_line}):")
-                
+
                 for i in range(start_idx, end_idx):
                     line_content = lines[i].rstrip('\n')
-                    snippet_lines.append(f"{i + 1:3d}: {line_content}")
-                    
-                    # Add error marker right after the error line
-                    if i == line_idx:
-                        prefix_len = len(f"{i + 1:3d}: ")
-                        marker_pos = prefix_len + col_num - 1
-                        marker = ' ' * marker_pos + '^^ ERROR at column ' + str(col_num)
-                        snippet_lines.append(marker)
-                
+
+                    # Skip comment lines (but keep line numbers intact)
+                    if not line_content.lstrip().startswith('//'):
+                        snippet_lines.append(f"{i + 1:3d}: {line_content}")
+
+                        # Add error marker right after the error line
+                        if i == line_idx:
+                            prefix_len = len(f"{i + 1:3d}: ")
+                            marker_pos = prefix_len + col_num - 1
+                            marker = ' ' * marker_pos + '^^ ERROR at column ' + str(col_num)
+                            snippet_lines.append(marker)
+
                 return '\n'.join(snippet_lines)
             
             else:
                 # Fallback to context lines approach
                 start_idx = max(0, line_idx - context_lines)
                 end_idx = min(len(lines), line_idx + context_lines + 1)
-                
+
                 snippet_lines = []
                 snippet_lines.append(f"CODE CONTEXT (lines {start_idx + 1}-{end_idx}):")
-                
+
                 for i in range(start_idx, end_idx):
                     line_content = lines[i].rstrip('\n')
-                    snippet_lines.append(f"{i + 1:3d}: {line_content}")
-                    
-                    # Add error marker right after the error line
-                    if i == line_idx:
-                        prefix_len = len(f"{i + 1:3d}: ")
-                        marker_pos = prefix_len + col_num - 1
-                        marker = ' ' * marker_pos + '^^ ERROR at column ' + str(col_num)
-                        snippet_lines.append(marker)
-                
+
+                    # Skip comment lines (but keep line numbers intact)
+                    if not line_content.lstrip().startswith('//'):
+                        snippet_lines.append(f"{i + 1:3d}: {line_content}")
+
+                        # Add error marker right after the error line
+                        if i == line_idx:
+                            prefix_len = len(f"{i + 1:3d}: ")
+                            marker_pos = prefix_len + col_num - 1
+                            marker = ' ' * marker_pos + '^^ ERROR at column ' + str(col_num)
+                            snippet_lines.append(marker)
+
                 return '\n'.join(snippet_lines)
             
         except FileNotFoundError:
@@ -436,20 +442,91 @@ class AlloyExecutor:
                     i = j  # Skip past the lines we've already processed
                     continue
             
-            # Also look for Type errors (different format)
-            elif "Type error" in line:
-                # Type errors might have different format, capture the line
-                errors.append({
-                    "type": "type_error",
-                    "message": line,
-                    "full_text": line
-                })
+            # Also look for Type errors (similar format to Syntax errors)
+            elif "Type error in" in line or ("[main] ERROR alloy" in line and "Type error" in line):
+                # Extract file path, line number, and column number
+                # Pattern: "Type error in /path/to/file.als at line 131 column 54:"
+                import re
+                match = re.search(r'Type error in (.+?\.als) at line (\d+) column (\d+)', line)
+                
+                if match:
+                    file_path = match.group(1)
+                    line_num = int(match.group(2))
+                    col_num = int(match.group(3))
+                    
+                    # Look ahead for context (next lines contain type mismatch details)
+                    context_lines = []
+                    j = i + 1
+                    # Capture next lines until we hit a stack trace or "Type error" repetition
+                    while j < len(lines) and j < i + 6:
+                        next_line = lines[j].strip()
+                        # Stop at stack traces or another error
+                        if next_line.startswith("at ") or next_line == "Error":
+                            break
+                        # Stop at duplicate "Type error" line (Alloy reports twice)
+                        if "Type error in" in next_line and j > i + 1:
+                            break
+                        # Include helpful context like "This must be...", "Instead, it has..."
+                        if next_line:
+                            context_lines.append(next_line)
+                        # Stop after we get both "This must be" and "Instead, it has"
+                        if len(context_lines) >= 3 and any("Instead" in line for line in context_lines):
+                            break
+                        j += 1
+                    
+                    # Build user-friendly error message
+                    error_message = f"Type error at line {line_num}, column {col_num}"
+                    
+                    # Add context if available
+                    context = "\n".join(context_lines) if context_lines else ""
+                    
+                    # Extract code snippet if model_path is available
+                    code_snippet = ""
+                    if model_path and model_path.exists():
+                        code_snippet = self._extract_code_snippet(
+                            str(model_path), 
+                            line_num, 
+                            col_num
+                        )
+                    
+                    # Create structured error
+                    error_obj = {
+                        "type": "syntax_error",  # Keep as syntax_error for consistency
+                        "file": file_path,
+                        "line": line_num,
+                        "column": col_num,
+                        "message": error_message,
+                        "context": context,
+                        "code_snippet": code_snippet,
+                        "full_text": line + ("\n" + "\n".join(context_lines) if context_lines else "")
+                    }
+                    
+                    errors.append(error_obj)
+                    i = j  # Skip past the lines we've already processed
+                    continue
             
             i += 1
         
-        # If we found structured errors, return them
+        # If we found structured errors, deduplicate and return them
         if errors:
-            return errors
+            # Deduplicate errors by (file, line, column)
+            # Alloy Analyzer reports each error twice, we only want the first occurrence
+            seen_locations = set()
+            deduplicated_errors = []
+            
+            for error in errors:
+                # Create location key from file, line, column
+                location_key = (
+                    error.get('file'),
+                    error.get('line'),
+                    error.get('column')
+                )
+                
+                if location_key not in seen_locations:
+                    seen_locations.add(location_key)
+                    deduplicated_errors.append(error)
+            
+            return deduplicated_errors
         
         # Fallback: if we detected errors but couldn't parse them, capture raw output
         if "error" in output.lower() and not errors:
@@ -613,16 +690,43 @@ class AlloyExecutor:
                     "error": str(e)
                 })
 
-        # Identify comprehensive instance (All_Requirements or last run)
-        for inst in analysis["instances"]:
-            cmd_name = inst["command_name"].lower()
-            if "all_requirements" in cmd_name or "all_" in cmd_name:
-                analysis["comprehensive_instance"] = inst
-                break
+        # Identify comprehensive instance using priority logic
+        # Priority: 1. All_Requirements, 2. Longest R-chain, 3. baseline, 4. last
+        instances = analysis["instances"]
 
-        # If no All_Requirements found, use the last instance
-        if not analysis["comprehensive_instance"] and analysis["instances"]:
-            analysis["comprehensive_instance"] = analysis["instances"][-1]
+        if instances:
+            # Priority 1: Look for "All_Requirements"
+            for inst in instances:
+                if inst["command_name"] == "All_Requirements":
+                    analysis["comprehensive_instance"] = inst
+                    break
+
+            # Priority 2: Find longest R-chain (R1R2R3 > R1R2 > R1)
+            if not analysis["comprehensive_instance"]:
+                r_chain_instances = []
+                for inst in instances:
+                    cmd_name = inst["command_name"]
+                    # Count consecutive R digits (R1, R1R2, R1R2R3, etc.)
+                    if cmd_name.startswith('R') and any(c.isdigit() for c in cmd_name):
+                        # Count how many R-number pairs
+                        r_count = cmd_name.count('R')
+                        r_chain_instances.append((r_count, inst))
+
+                if r_chain_instances:
+                    # Sort by R-count descending, return highest
+                    r_chain_instances.sort(key=lambda x: x[0], reverse=True)
+                    analysis["comprehensive_instance"] = r_chain_instances[0][1]
+
+            # Priority 3: Look for "baseline"
+            if not analysis["comprehensive_instance"]:
+                for inst in instances:
+                    if inst["command_name"] == "baseline":
+                        analysis["comprehensive_instance"] = inst
+                        break
+
+            # Priority 4: Use last instance as fallback
+            if not analysis["comprehensive_instance"]:
+                analysis["comprehensive_instance"] = instances[-1]
 
         # Select up to 3 sample instances for Evaluator review
         # Prioritize: comprehensive + up to 2 others

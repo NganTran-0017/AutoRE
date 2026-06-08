@@ -133,6 +133,25 @@ class CLIInteraction:
 
         return True
 
+    def _filter_extend_keyword(self, text: str) -> str:
+        """
+        Remove all occurrences of the word 'EXTEND' (case-sensitive) from user input.
+        This prevents the agents from misinterpreting the EXTEND keyword in user feedback.
+
+        Args:
+            text: User input text
+
+        Returns:
+            Text with 'EXTEND' keyword removed
+        """
+        import re
+        # Use word boundary to match 'EXTEND' as a whole word only (case-sensitive)
+        # This will match "EXTEND" but not "extend" or "Extended"
+        filtered_text = re.sub(r'\bEXTEND\b', '', text)
+        # Clean up any double spaces that might result from removal
+        filtered_text = re.sub(r'  +', ' ', filtered_text)
+        return filtered_text.strip()
+
     def request_input(self, prompt: str, concise_prompt: Optional[str] = None,
                      multiline: bool = True) -> Optional[str]:
         """
@@ -208,10 +227,13 @@ class CLIInteraction:
                             self.countdown_thread.join(timeout=1)
                         print()
 
-                        self.logger.log_user_input(user_input)
+                        # Filter EXTEND keyword before sending to agents
+                        filtered_input = self._filter_extend_keyword(user_input)
+                        
+                        self.logger.log_user_input(filtered_input)
                         if self.extensions_used > 0:
                             self.logger.log(f"(User used {self.extensions_used} time extension(s))", to_file=True)
-                        return user_input
+                        return filtered_input
 
                 except EOFError:
                     signal.alarm(0)
@@ -309,10 +331,13 @@ class CLIInteraction:
             user_input = '\n'.join(lines).strip()
 
             if user_input:
-                self.logger.log_user_input(user_input)
+                # Filter EXTEND keyword before sending to agents
+                filtered_input = self._filter_extend_keyword(user_input)
+                
+                self.logger.log_user_input(filtered_input)
                 if self.extensions_used > 0:
                     self.logger.log(f"(User used {self.extensions_used} time extension(s))", to_file=True)
-                return user_input
+                return filtered_input
             else:
                 self.logger.log("No input provided (empty)", to_file=True)
                 return None
@@ -338,11 +363,14 @@ class CLIInteraction:
                 self.logger.log_separator()
 
                 # Log the captured input
-                self.logger.log_user_input(user_input)
+                # Filter EXTEND keyword before sending to agents
+                filtered_input = self._filter_extend_keyword(user_input)
+                
+                self.logger.log_user_input(filtered_input)
                 if self.extensions_used > 0:
                     self.logger.log(f"(User used {self.extensions_used} time extension(s))", to_file=True)
 
-                return user_input
+                return filtered_input
             else:
                 # User truly provided no input
                 self.logger.log("⏱️  TIMEOUT: No input received within time limit")

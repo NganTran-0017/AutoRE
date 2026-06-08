@@ -137,7 +137,7 @@ class PromptManager:
             
             # RE agent - Alloy model actions
             "BuildAlloyModel": "ResponseFormatAlloyModel",
-            "UpdateAlloyModel": "ResponseFormatAlloyModel",
+            "UpdateAlloyModel": "ResponseFormatUpdateAlloyModel",
             
             # Evaluator agent - Specific response formats
             "InterpretResults": "ResponseFormatInterpretation",
@@ -184,17 +184,20 @@ class PromptManager:
         # Define which actions should NOT include ConvergenceCriteria
         actions_without_convergence = {
             "UpdateRequirements",       # Evaluator - updating requirements doesn't need convergence criteria
+            "GenerateSyntaxRepairInstruction",  # Evaluator - syntax repair is pre-verification, no convergence concept
         }
 
         # Define which actions should NOT include QualityStandards
         actions_without_quality_standards = {
             "IncorporateClarifications",  # RE - incorporating clarifications is straightforward update
             "UpdateRequirements",  # Evaluator - updating requirements is straightforward document update
+            "GenerateSyntaxRepairInstruction",  # Evaluator - syntax repair has specific quality requirements in its own prompt
         }
 
         # Define which actions should NOT include LearningInstructions
         actions_without_learning = {
             "IncorporateClarifications",  # RE - simple clarification incorporation doesn't need learning
+            "UpdateRequirements",  # Evaluator - updating requirements is straightforward document update
         }
 
         # Define which actions should NOT include Role section

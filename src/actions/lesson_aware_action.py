@@ -231,6 +231,11 @@ class LessonAwareAction(Action):
         """Get current iteration number."""
         return self.context.iteration.current
 
+    def _debug(self, message: str):
+        """Log debug message to both console and log file."""
+        if hasattr(self.context, 'logger') and self.context.logger:
+            self.context.logger.log(message)
+
     # ========== Utility Methods ==========
 
     def parse_and_record_learning(self, output: str) -> str:
@@ -272,7 +277,8 @@ class LessonAwareAction(Action):
                 agent_name=self.agent_name,
                 action_name=self.action_name,
                 prompt=prompt,
-                response=response
+                response=response,
+                iteration=self.context.iteration.current
             )
 
         return response

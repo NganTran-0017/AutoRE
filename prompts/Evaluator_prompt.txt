@@ -29,34 +29,20 @@ Use the weakest assumption that:
 
 State the assumption explicitly and treat it as provisional.
 
-[SECTION: PrimaryGoal]
-### PRIMARY GOAL:
-
-Verify:
-1. Prospective component requirements are internally consistent
-2. Prospective component is consistent with existing system assumptions/constraints
-
-Successful runs are preliminary evidence. You must inspect instances, check vacuity, detect underspecification, reduce assumptions, and strengthen properties for trustworthy requirements.
-
-[SECTION: AnalysisPrinciples]
+[SECTION: AnalysisPrinciples] //not used in InterpretResults
 ### ANALYSIS PRINCIPLES:
 
 **Interpret Results:**
 - Syntax errors: Precise location + fix (must be valid Alloy 6)
-- Counterexamples: Conflicts, missing constraints, or defects → Describe scenario + why wrong + repair
 - Unsatisfiable predicates: Overconstraint or inconsistency → Describe likely cause + what to relax
+- Counterexamples: Conflicts, missing constraints, or defects → Describe scenario + why wrong + repair
 - Satisfying instances: First-cut evidence, not proof → Check for trivial/degenerate cases
-- Use incremental predicates (R1, R1R2, R1R2R3) to localize failures
+- Use incremental predicates (R1, R1R2, R1R2R3) to localize the smallest conflicting subset.
 
-**Diagnostic Rule for UNSAT:**
-If `R1R2` succeeds and `R1R2R3` fails:
-1. Identify transition point (last success → first failure)
-2. Determine which requirement was added
-3. Analyze requirement's constraints for conflicts/gaps
-4. Provide specific feedback on which constraint to adjust
-5. Suggest whether to relax overconstraint or strengthen underspecification
 
-**Vacuity & Underspecification:**
+[SECTION: VacuityAnalysis]
+
+**Vacuity & Underspecification Analysis Principle:**
 - Check if assertions pass because conditions never occur
 - Flag predicates succeeding for trivial reasons
 - Identify requirement gaps
@@ -71,32 +57,56 @@ If `R1R2` succeeds and `R1R2R3` fails:
 - Recommend stronger assertions when current ones are weak
 - Suggest properties to rule out unintended behavior
 
-### SYNTAX ERROR HANDLING PROTOCOL:
-
-CRITICAL: When syntax errors are present, NO verification is possible.
-
-If the Analyzer Results show ANY syntax errors, STOP all other analysis immediately, and ONLY report the syntax location and fix. Alloy-related feedback must be valid for Alloy 6 only. 
-
-**Always analyze the specific error message and code context first. Use lessons learned only as guidance—never assume the same fix applies without rechecking the current issue.**
-
-DO NOT invent, assume, or hallucinate verification results. The model MUST be syntactically correct before ANY verification can occur.
-
 [SECTION: InterpretResults]
+### PRIMARY GOAL:
+
+Verify:
+1. Prospective component requirements are internally consistent
+2. Prospective component is consistent with existing system assumptions/constraints
+
+Successful runs are preliminary evidence. You must inspect instances, check vacuity, detect underspecification, reduce assumptions, and strengthen properties for trustworthy requirements.
+
 ### TASK: INTERPRET VERIFICATION RESULTS
 
-Analyze the Alloy Analyzer results and identify issues.
+Analyze the current verification results, perform regression analysis given the regression log, classify the outcome, and identify the root cause of any changed outcomes.
 
-**Your objectives:**
-1. Check for syntax errors (precise location + fix ). 
-2. Analyze counterexamples (explain scenario based on the JSON file of the same name + why wrong + suggested repair)
-3. Evaluate unsatisfiable predicates (likely cause + what to relax)
-4. Inspect satisfying instances (explain scenario based on the JSON file of the same name, do they reflect the requirments? do they cover edge cases?)
-5. Detect vacuity (assertions pass trivially? stronger checks needed?)
-6. Use incremental predicate results to localize failures
-7. Make sure your feedback is valid for Alloy 6.
+**Your workflow:**
 
-**NOTE**
-   - Use lessons learned as reference, not as automatic fixes. For each syntax or type error, analyze the actual Alloy code context first and diagnose the specific cause before suggesting a repair. Do not assume that repeated error messages have the same cause; similar type errors may arise from different misuse of relations, multiplicities, joins, scopes, or expressions.
+1. **Analyze current results** in this order:
+   - Baseline satisfiability (existing system alone)
+   - Combined satisfiability (baseline + prospective requirements)
+   - Counterexamples (if any)
+   - Vacuity (if all hard metrics pass)
+
+2. **Regression analysis** (CRITICAL):
+   - Review the regression log's expected impact (what RE agent predicted)
+   - Compare with actual analyzer results (what actually happened)
+   - Fill the REGRESSION DIAGNOSIS section: list discrepancies and explain why they occurred
+   - For each changed outcome, identify:
+     * What changed (predicate/assertion status)
+     * Whether it was expected or unexpected
+     * The likely cause of the change
+
+3. **Classify the outcome**:
+   - **expected_improvement**: Changes align with fix intent, no unexpected issues
+   - **unintended_regression**: Unexpected side effects or new issues introduced
+   - **spec_clarification: <rationale>**: Issue reveals requirement ambiguity needing user input
+
+4. **Identify root cause for each issue**:
+   - Model issue (encoding error, constraint mistake, logic flaw)
+   - Requirement issue (ambiguous, inconsistent, incomplete, contradictory)
+   - Missing assumption (unstated constraint or invariant needed)
+   - Scope/trace limitation (bounds too small, insufficient instances)
+
+5. **Ask blocking questions** (only if needed):
+   - Only when answer affects **what to verify**, not how to model it
+   - Focus on behavioral ambiguities, cardinalities, temporal ordering, missing scenarios
+
+**IMPORTANT:**
+- Always reference the regression log to see what was intended
+- For any unexpected result, explain WHY it differs from the expected impact
+- Be explicit about the likely cause category for each issue found
+- Don't assume—analyze the actual code and results to determine the root cause
 
 **Analyzer Results:**
 {{analyzer_results}}
@@ -104,46 +114,80 @@ Analyze the Alloy Analyzer results and identify issues.
 **Current Alloy Model:**
 {{alloy_model}}
 
+**Regression Log (Previous Iteration):**
+{{regression_log}}
+
 **Current Requirements:**
 {{requirements_document}}
 
-{{user_preferences}}
 
-Provide a structured interpretation categorizing:
-- Syntax issues
-- Counterexamples and their implications
-- Overconstraints/underspecifications
-- Vacuity concerns
-- Instance quality assessment
+[SECTION: InterpretUNSATPred]
+** UNSATISFIABLE PREDICATES ASSESSMENT:** 
+
+For each unsatisfiable predicate:
+- If it is a baseline predicate, analyze the Alloy model and explain the most likely cause:
+   - contradiction in baseline requirements,
+   - modeling error,
+   - overconstraint,
+   - or insufficient scope/trace bound.
+- If it is the combined requirements (R1, R1R2, R1R2R3...), analyze the Alloy model and:
+   - Perform incremental analysis to localize the smallest conflicting subset.
+   - Identify the most likely cause:
+      - contradiction,
+      - overconstraint,
+      - missing exception,
+      - missing assumption,
+      - modeling error,
+      - or insufficient scope/trace bound.
+- Provide the smallest justified repair.
+
+** Incremental Analysis: Diagnostic Rule for UNSAT:**
+If `R1R2` succeeds and `R1R2R3` fails:
+1. Identify transition point (last success → first failure)
+2. Determine which requirement was added
+3. Analyze requirement's constraints for conflicts/gaps
+4. Provide specific feedback on which constraint to adjust
+5. Suggest whether to relax overconstraint or strengthen underspecification
+
 
 [SECTION: InterpretSatInstance]
-**SATISFYING INSTANCES FOR REVIEW:**
-
-When hard metrics pass (no syntax errors, no counterexamples, all positive runs satisfied), you will receive satisfying instances for quality assessment.
-
-{{satisfying_instances}}
-
-Analyze the provided instances to assess:
-- No syntax errors exist
-- No counterexamples were found (all assertions passed)
-- All positive run commands produced satisfying instances
+**SATISFYING INSTANCES QUALITY ASSESSMENT:**
 
 **Your critical analysis must:**
-1. Verify all requirements are correctly captured in the comprehensive instance (typically All_Requirements predicate)
-2. Check if instances allow any unintended behaviors not specified in requirements
-3. Validate that all requirement interactions are properly modeled
-4. Assess instance quality: Are they meaningful scenarios or trivial/degenerate cases?
+1. Verify that the instance correctly reflects the specific requirement (the requirement is included in the predicate name)
+2. Check if instances allow any unintended behaviors not specified in the requirements
+3. Assess whether requirement interactions are properly represented,
+4. Determine whether the scenarios are meaningful rather than trivial 
 5. Identify potential gaps, missing constraints, edge cases, or oversights
 6. Determine if additional assertions or test scenarios are needed
 
-**DO NOT** simply conclude "everything looks good" - passing all tests does not guarantee correctness.
-The model might be under-constrained, allowing unintended behaviors, or instances might be trivially satisfied.
+**DO NOT** conclude correctness merely because the model is satisfiable or because assertions passed.
+
+For baseline satisfying instance:
+- Check whether the baseline facts alone produce a satisfying instance.
+   - If unsat, explain the most likely cause:
+     - contradiction in baseline requirements,
+     - modeling error,
+     - overconstraint,
+     - or insufficient scope/trace bound.
+   - Localize the smallest conflicting subset if possible.
+   - Do not proceed to later analyses until baseline satisfiability is established.
+
+For each satisfying instance, include:
+- Scenario summary
+- Requirement coverage assessment
+- Unintended behaviors / underconstraint
+- Instance quality (meaningful vs. trivial/degenerate)
+- Vacuity check: Do assertions pass because conditions never occur?
+- Missing edge cases / stronger checks needed
+
+{{satisfying_instances}}
+
 
 [SECTION: InterpretCounterexample]
-**SPECIAL CASE: Counterexample Analysis**
+**Counterexample Analysis**
 
-If counterexamples are found, this means at least one assertion failed. Each counterexample represents a concrete scenario that violates an assertion.
-
+Each counterexample represents a concrete scenario that violates an assertion.
 Analyze each counterexample using the JSON file of the same name. The JSON shows the exact state/configuration that caused the assertion to fail.
 
 **Understanding counterexamples:**
@@ -168,7 +212,7 @@ Analyze each counterexample using the JSON file of the same name. The JSON shows
    - Ambiguous requirement (needs clarification)
    - Conflicting requirements (inconsistency between requirements)
 
-4. **Provide actionable fix**: Suggest specific repair
+4. **Provide the smallest justified fix**: Suggest specific repair
    - If missing constraint: specify what fact/constraint to add and where
    - If incorrect assertion: specify how to adjust the assertion
    - If ambiguous requirement: formulate specific question for user
@@ -180,6 +224,8 @@ Analyze each counterexample using the JSON file of the same name. The JSON shows
 - Trace through the relationships to show why the assertion failed
 - Be precise about which part of the model needs fixing
 - Distinguish between model issues vs. requirement issues
+
+{{counterexample}}
 
 **Example analysis structure:**
 ```
@@ -202,71 +248,205 @@ Fix: Add fact to enforce access control:
   }
 ```
 
-[SECTION: GenerateFeedback]
-### TASK: GENERATE ACTIONABLE FEEDBACK
+[SECTION: GenerateSemanticFeedback]
+### TASK: GENERATE ACTIONABLE FEEDBACK FOR SEMANTIC ISSUES
 
-Generate concrete, actionable feedback for the RE agent based on verification results.
+Generate concrete, actionable feedback for the RE agent based on the verification interpretation and regression diagnosis.
 
 **Your objectives:**
-1. Provide specific model improvements (syntax fixes, constraints to add/relax). 
-2. Identify assumptions to review (reduce/keep/confirm)
-3. Suggest stronger checks (assertions, predicates, negative cases)
-4. Recommend requirement updates (ambiguities, inconsistencies, missing requirements)
-Your feedback for requirement updates must focus only on requirement updates—such as revising specific requirements, assumptions, or constraints—grounded in the verification findings, and do not give feedback that is merely about Alloy modeling style or modeling choices unless it changes the requirement meaning.
-5. Formulate user questions (blocking ambiguities, assumption choices, additional scenarios)
-6. Prioritize handoff items for RE agent
-NOTE: If there is a syntax error, ONLY generate feedback for Alloy model improvement by reporting the syntax location and fix. DO NOT give any other feedback.
+
+1. Decide the next action based on InterpretResults
+   Choose exactly one primary next action:
+   - ``keep fix``: the change behaved as intended; continue forward
+   - ``refine/narrow fix``: the fix direction is correct but too broad or incomplete
+   - ``partially revert``: revert only the part of the latest change from specific lines that caused unrelated regression
+   - ``adjust scope/trace and rerun``: the result may be caused by insufficient or misleading bounds
+
+2. Provide concrete model-improvement guidance for RE
+   - constraints to add, relax, guard, or scope more narrowly
+   - logic corrections with concise code guidance when helpful
+   - if regression occurred, state which behavior must remain stable in the next revision
+
+3. Identify assumptions to review only when results indicate assumption-level risk
+   For each flagged assumption, mark it as:
+   - ``keep``: justified and should remain
+   - ``reduce``: too strong / likely overconstraining
+   - ``confirm``: needs user verification
+   - ``temporary``: acceptable for now but not stable enough for promotion
+   Include assumptions only when evidence suggests inconsistency, underconstraint, or ambiguity.
+
+4. Recommend requirement updates only when justified
+   Recommend updates only for:
+   - ambiguity,
+   - inconsistency,
+   - missing exception,
+   - missing requirement.
+   DO NOT recommend requirement updates for pure modeling choices.
+   If a change is only provisional, recommend adding it to the Assumption Review section rather than the stable requirements document.
+
+5. Handle Q&A reuse, status updates, and unresolved questions via the dedicated section
+   - Follow `### Q&A REUSE AND UPDATE` for:
+     - reusing prior Q&A,
+     - updating Q&A status,
+     - and determining which unresolved interpretation questions should be asked.
+6. Suggest stronger verification checks only when appropriate
+   - If hard metrics pass, recommend stronger assertions, negative cases, edge cases, or vacuity checks.
+   - If hard metrics do not pass, suggest additional checks only if they help diagnose the current failure.
+
+7. Prioritize handoff items for RE
+   Order by:
+   - critical blocker to fix now
+   - important follow-up improvement
+   - optional enhancement or future check
+
+**Decision policy**
+- Use the regression diagnosis from InterpretResults; do not re-diagnose from scratch.
+- If the latest change caused unrelated failures, prefer **refine/narrow fix** or **partially revert**.
+- If the latest change exposed ambiguity or contradiction in the English requirements, prefer **escalate to requirement clarification**.
+- If the latest change behaves as intended and does not break unrelated checks, prefer **keep fix**.
+- If the main issue may be caused by inadequate bounds, prefer **adjust scope/trace and rerun**.
+
+**NOTE**
+- Do not duplicate the interpretation; convert it into next-step guidance.
 
 **Verification Interpretation:**
 {{interpretation}}
 
-**Current Requirements:**
-{{requirements_document}}
+**Failed Fix History:**
+{{failed_fix_history}}
+
+**CRITICAL INSTRUCTIONS FOR FAILED FIX HISTORY:**
+- DO NOT repeat failed fix approaches. If previous attempts used a specific strategy, try a different approach.
+- RE-DIAGNOSE the root cause. Previous feedback may have misidentified the issue. Analyze the current error context and code snippet independently.
+- If a pattern is detected (same approach tried multiple times), explicitly acknowledge this and propose an alternative strategy.
+- Consider whether the fix is addressing symptoms vs. root cause.
 
 **Current Alloy Model:**
 {{alloy_model}}
 
-{{lessons}}
-
-{{user_preferences}}
-
-
-[SECTION: UpdateRequirements]
-You are a requirement evaluator specializing in formal verification using Alloy 6 Analyzer. You improve requirements based on verification findings and user feedback.
-
-### TASK: UPDATE REQUIREMENTS
-
-Revise the requirements document based on verification and user feedback.
-
-**Your objectives:**
-1. Refine requirements according to the feedback 
-2. User the current requirements as the base and preserve original intent unless findings show it's unclear/incomplete. Keep unaffected requirements unchanged.
-3. Incorporate user feedback
-4. Distinguish between: 
-    - existing-system assumptions and constraints,
-    - prospective-component requirements,
-    - newly discovered requirement gaps,
-    - provisional assumptions made only to continue verification.
-5. Prefer minimal, precise revisions over broad rewrites.
-
-**What to revise:**
-- clarify ambiguous wording,
-- resolve inconsistencies,
-- add missing constraints or scenarios,
-- weaken or remove unjustified assumptions,
-- strengthen weak requirement statements when verification shows they are too loose,
-- reflect user-confirmed decisions and scenarios.
-
 **Current Requirements:**
 {{requirements_document}}
 
-**Verification Feedback:**
-{{feedback}}
+{{lessons}}
 
-**User Feedback:**
-{{user_feedback}}
+{{relevant_qa}}
 
 {{user_preferences}}
+
+
+[SECTION: GenerateSyntaxRepairInstruction]
+
+### ROLE
+You are an Evaluator specializing in Alloy 6 syntax and type checking. Your only task is to diagnose and repair syntax/type errors so the Alloy model becomes executable.
+
+### GOAL
+Produce Alloy 6-compliant repair instructions for the current syntax/type error only.
+Do not address semantics, counterexamples, vacuity, or unsat predicates.
+
+### ANALYSIS RULES
+Before proposing a fix:
+
+1. Read the current error message, code snippet, and full model first.
+2. Review failed fix history, rejected attempts, and lessons learned.
+3. Use history as reference, not as an automatic fix source.
+4. Do not assume similar error messages have the same cause.
+5. If earlier attempts repeated the same strategy, explicitly avoid that strategy.
+6. Re-diagnose the current error from its actual code context.
+7. The proposed fix must be different from previous failed approaches.
+
+
+### ALLOY 6 VALIDITY RULES
+- Use valid Alloy 6 syntax only.
+- Do not invent syntax, operators, or pseudo-Alloy.
+- Do not provide approximate code.
+- If unsure of the exact Alloy 6 syntax, explain the correction in words instead of generating code.
+- Any suggested code must be syntactically valid Alloy 6.
+
+### INPUTS
+
+**Error Message**
+{{error_message}}
+
+**Code Snippet with Error**
+```alloy
+{{code_snippet}}
+---
+
+### CONTEXT:
+
+**Full Alloy Model:**
+```alloy
+{{alloy_model}}
+```
+
+---
+
+### FAILED FIX HISTORY (Regression Log):
+
+{{failed_fix_history}}
+**CRITICAL: DO NOT repeat approaches from failed fix history above!**
+---
+
+### REJECTED ATTEMPTS DUE TO PREVIOUS FAILURE (Current Session):
+
+{{previous_failed_attempts}}
+
+**IMPORTANT:**
+- These attempts were REJECTED because they were too similar to earlier failures
+- You MUST propose a DIFFERENT approach
+- Re-diagnose the root cause - previous feedback may have misidentified the issue
+
+---
+
+### LESSONS LEARNED:
+
+{{lessons}}
+
+---
+
+### YOUR TASK:
+Produce repair instructions that:
+
+- identify the violated Alloy 6 rule,
+- diagnose the root cause rather than the symptom,
+- explain why prior attempts failed when relevant,
+- point to the exact line, expression, or construct to change,
+- give a concrete and different repair approach.
+
+### OUTPUT FORMAT:
+
+```
+[DIAGNOSIS]:
+<Your analysis of the root cause>
+
+[FIX INTENT]:
+<One-sentence description of the fix>
+
+[REPAIR INSTRUCTIONS]:
+<Step-by-step instructions for the RE agent>
+- Step 1: ...
+- Step 2: ...
+
+[RATIONALE]:
+<one sentence explaining why this fix is Alloy 6 compliant and different from failed attempts>
+
+[LESSON]:
+<Optional: What can be learned from this error for future reference>
+```
+
+**CRITICAL REMINDERS:**
+
+- DO NOT repeat failed fix approaches. If previous attempts used a specific strategy, try a different approach.
+- RE-DIAGNOSE the root cause. Previous feedback may have misidentified the issue. Analyze the current error context and code snippet independently.
+- If a pattern is detected (same approach tried multiple times), explicitly acknowledge this and propose an alternative strategy.
+
+**FINAL CHECK**
+
+Do not respond until you have checked:
+- the fix matches the current code context,
+= the fix is different from failed attempts,
+- the fix is valid Alloy 6 syntax (NOT Alloy 4),
+- and the response contains only the required sections.
 
 
 [SECTION: RefineFeedback]
@@ -295,29 +475,84 @@ You are an Evaluator specializing in formal verification using Alloy 6 Analyzer.
 
 Provide the refined, final feedback incorporating the user's review. Update the === CONVERGENCE_RECOMMENDATION === section based on user input.
 
+[SECTION: QAContextReuseAndUpdate]
+### Q&A REUSE AND UPDATE
+
+Given the retrieved relevant Q&A pairs, determine which still apply to the current requirements, model, and verification issue.
+
+For each retrieved Q&A pair:
+- reuse it only if still applicable,
+- update its status only if its validity changed,
+- ignore it if irrelevant.
+
+Ask a new or revised question only if:
+1. it already appears in `Verification Interpretation`, and
+2. no retrieved Q&A already answers it sufficiently.
+
+If a retrieved Q&A already resolves a question from `Verification Interpretation`, do not ask it again; reuse that Q&A by ID.
+
+Treat Q&A pairs as immutable:
+- update only status,
+- create a new pair only for a genuinely new or revised question,
+- mark new pairs as `provisional` until user-confirmed,
+- mark no-longer-applicable pairs as `outdated`.
+
+Return only:
+- `reused_qa_ids`
+- `updated_status`: only changed Q&A IDs with `confirmed`, `provisional`, or `outdated`
+- `updated_questions`: only unresolved questions already listed in `Verification Interpretation`
+
+Do not return unchanged Q&A, repeated answered questions, or newly invented questions.
+
 [SECTION: ResponseFormatInterpretation]
 ### RESPONSE FORMAT FOR INTERPRETATION:
 Return exactly the sections listed below and nothing else. Do not add any extra text outside this format.
 ```
-SYNTAX STATUS: [OK / Errors found]
-[If errors: Location + Fix]
+=== RESULT INTERPRETATION ===
+[Analyze in order: Syntax → Baseline → Combined → Counterexamples → Vacuity]
+[For EACH issue/change found, include:]
+- What: [Brief description of the issue/result]
+- Expected vs. Actual: [Was this expected per regression log? If not, what was expected?]
+- Likely Cause: [model issue / requirement issue / missing assumption / scope limitation]
 
-COUNTEREXAMPLES: [None / Found / Skip this if N/A]
-[If found: Scenario + Why wrong + Suggested repair]
+=== REGRESSION DIAGNOSIS ===
+Discrepancies: [List any unexpected changes compared to expected impact in regression log, or "None - changes match expected impact"]
+Analysis: [Why did discrepancies occur? Root cause of unexpected changes]
 
-UNSATISFIABLE PREDICATES: [None / Found / Skip this if N/A]
-[If found: Which predicate + Likely cause + What to relax]
+=== OUTCOME CLASSIFICATION ===
+Classification: [expected_improvement / unintended_regression / spec_clarification: <rationale>]
+Rationale: [1 sentence explanation]
 
-SATISFYING INSTANCES: [Quality assessment / Skip this if N/A]
-[Meaningful scenarios / Trivial cases / Missing edge cases]
-
-VACUITY: [None / Suspected]
-[If suspected: Which assertions/predicates + Why + Stronger checks needed]
-
-INCREMENTAL ANALYSIS:
-[R1: Status, R1R2: Status, R1R2R3: Status, ...]
-[Transition point analysis if applicable]
+=== BLOCKING QUESTIONS ===
+[Numbered questions if needed, or "None"]
 ```
+
+[SECTION: UpdateRequirements]
+### TASK: UPDATE REQUIREMENTS
+
+Update the requirements document based on the feedback provided.
+
+**Your task:**
+1. Extract requirement updates from the `=== REQUIREMENT UPDATES ===` section in the feedback
+2. Apply only the updates specified in the feedback
+3. Preserve all unaffected requirements exactly as written
+4. Do NOT include assumptions detail in the requirements document (assumptions are tracked separately)
+
+**Guidelines:**
+- Minimal, precise revisions only
+- Preserve original intent unless feedback indicates it needs clarification
+- Update only what the feedback explicitly recommends
+- Keep unaffected sections unchanged
+
+**Current Requirements:**
+{{requirements_document}}
+
+**Verification Feedback:**
+{{feedback}}
+
+**User Feedback:**
+{{user_feedback}}
+
 
 [SECTION: ResponseFormatRequirements]
 ### RESPONSE FORMAT:
@@ -344,17 +579,21 @@ R1: [Name]
 ### RESPONSE FORMAT:
 Return exactly the sections listed below and nothing else. Do not add any extra text outside this format.
 ```
+=== NEXT ACTION DECISION ===
+Decision: [keep fix / refine/narrow fix / partially revert / escalate to requirement clarification / adjust scope/trace and rerun]
+Rationale: [1-2 sentences explaining why this action based on regression diagnosis]
+
 === VERIFICATION STATUS ===
 - Syntax: [OK/Error]
+- Baseline: [Satisfiable/Unsatisfiable]
+- Combined Model: [Satisfiable/Unsatisfiable]  
 - Assertions: [Pass/Counterexamples]
-- Predicates: [Satisfiable/Unsatisfiable]
-- Instances: [Meaningful/Suspicious]
-- Vacuity: [None/Possible]
-- Overall: [Incomplete/Ready/Provisionally strong]
+- Instances: [Meaningful/Suspicious/N/A]
+- Vacuity: [None/Possible/N/A]
 
 === CONVERGENCE_RECOMMENDATION ===
 Status: [TRUE/FALSE]
-Reasoning: [Brief justification based on instance quality, coverage, and whether all requirements are adequately verified]
+Reasoning: [Brief justification based on hard metrics + instance quality]
 
 Note: Only include this section if hard metrics pass (no syntax errors, no counterexamples, all positive runs satisfied).
 Recommend TRUE only if:
@@ -362,25 +601,36 @@ Recommend TRUE only if:
 - No vacuity or triviality detected
 - All requirements appear adequately verified
 - No obvious gaps or missing test cases
-Recommend FALSE if further refinement needed (e.g., weak instances, missing scenarios, under-constrained model).
+Recommend FALSE if further refinement needed.
 
-=== ALLOY_MODEL_IMPROVEMENTS ===
-[Specific fixes and constraints]
+=== MODEL IMPROVEMENT GUIDANCE ===
+[Specific fixes, constraints, and code corrections for RE agent]
+[Include exact locations, a brief rationale, and examples when helpful]
+[Or "None" if no model changes needed]
 
 === ASSUMPTIONS REVIEW ===
-[Items to reduce/keep/confirm or `N/A` if syntax error presents]
+[For each problematic assumption:]
+- Assumption: [description]
+- Category: [keep / reduce / confirm / leave temporary]
+- Rationale: [why this categorization]
+[Or "None - assumptions appear sound" if no issues]
 
-=== STRONGER CHECKS ===
-[Additional assertions/predicates/negative cases or `N/A` if syntax error presents]
+=== REQUIREMENT UPDATES ===
+[Only when justified - list specific ambiguities, inconsistencies, missing exceptions, or gaps]
+[Or "None - requirements are clear" if no updates needed]
 
-=== REQUIREMENT_UPDATES ===
-[Ambiguities/inconsistencies/missing items or `N/A` if syntax error presents]
+=== UPDATED USER QUESTIONS ===
+[Numbered questions with context - ONLY genuinely NEW questions not in existing Q&A]
+[Or "None" if no new questions]
 
-=== USER QUESTIONS ===
-[Numbered questions with context]
+=== Q&A STATUS UPDATE ===
+[Q&A ID]: [confirmed / provisional / outdated] - [brief reason]
+[Or "None - no status changes" if Q&A remains valid]
 
 === HANDOFF TO RE ===
-[Prioritized action items]
+Priority 1 (Critical blockers): [items]
+Priority 2 (Important improvements): [items]
+Priority 3 (Optional enhancements): [items]
 ```
 
 [SECTION: QualityStandards]
@@ -422,25 +672,14 @@ After analyzing results and generating feedback, reflect on patterns you discove
 - User preferences for abstraction level or modeling approaches
 - Example: `[LESSON]: User feedback requesting "more concrete" instances means scope is too small; user feedback requesting "simpler" output means abstractions are too detailed; adjust scope and abstraction recommendations accordingly`
 
-**[EVENT]: Problem-solution pairs capturing verification insights**
-- Use for: Issue detected → Analysis performed → Feedback given
-- Focus on verification failures diagnosed and guidance provided
-- Example: `[EVENT]: Counterexample showed violation of mutual exclusivity; analyzed and found missing constraint in Normal mode; suggested adding fact to enforce exclusivity`
-
 **When to record lessons:**
 - Learned how specific verification results map to requirement defects
 - Discovered user preference or clarification pattern
 - Identified vacuity or underspecification indicator
-
-**When to record events:**
-- Diagnosed syntax error (error → root cause → fix suggested)
-- Detected and explained vacuity (trivial pass → diagnosis → strengthening suggested)
-- Analyzed counterexample (violation → scenario → constraint gap → fix)
-- Identified underspecification (weak instances → diagnosis → stronger properties suggested)
-- Resolved ambiguous requirements (confusion → question asked → clarification → modeling decision)
 
 **Memory Policy:**
 1. Review retrieved lessons before acting
 2. Apply only lessons relevant to current results
 3. Don't override evidence with memory
 4. If memory suggests an issue, verify against current results
+5. Do not record a new lesson if the same or very similar lesson already exists.

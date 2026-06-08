@@ -35,6 +35,24 @@ agents:
     profile: "Requirements Evaluator"
     max_feedback_history: 5
 
+  memory_assistant:
+    name: "MemoryAssistant"
+    model: "gpt-4o-mini"  
+    enabled: true
+
+# Memory system settings
+memory:
+  semantic_deduplication:
+    enabled: true
+    similarity_threshold: 0.85  # 85% semantic similarity = duplicate
+    merge_similar_lessons: true  # Use MemoryAssistant to merge
+    update_min_length_ratio: 1.1  # New must be 10%+ longer to trigger merge
+
+# Embedding model settings (for semantic similarity)
+embeddings:
+  device: "auto"  # Options: "cpu", "cuda", "auto" (auto will use GPU if available, fallback to CPU)
+  model_name: "all-MiniLM-L6-v2"  # SentenceTransformer model for embeddings
+
 # User interaction (CLI-based)
 user_interaction:
   mode: "cli"  # CLI-based interaction
