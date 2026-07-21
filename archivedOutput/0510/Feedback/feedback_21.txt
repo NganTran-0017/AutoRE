@@ -1,0 +1,45 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples (assertR3_MutExScenario_Positive fails; other relevant assertions pass)
+- Predicates: Satisfiable (including Scenario_MutualExclusionSuspended_Positive)
+- Instances: Meaningful (but positive mutual exclusion suspension scenario not realized in assertion)
+- Vacuity: Possible (predicate is satisfiable, but assertion fails; mismatch likely due to overconstraint or unreachable scenario)
+- Overall: Incomplete (model structure is sound, but R3 mutual exclusion suspension scenario is not verifiable as required)
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+1. Increase model scope for User, Role, and Delegation in check/assert commands to ensure enough entities exist to realize the positive mutual exclusion suspension scenario, but only if such expansions do not violate the persistent system-level constraints.
+2. Review the fact F_MinimumClearanceForDelegation and Scenario_MutualExclusionSuspended_Positive for overconstraint. Since the persistent minimum clearance rule MUST strictly apply (per user review), do NOT relax this rule for the positive scenario. Instead, confirm that the scenario is genuinely realizable under current constraints.
+3. Ensure mutuallyExclusiveWith is populated in all generated instances. As this is a modeling choice, either enforce via fact or ensure scope/initialization achieves the intended relations; document the chosen approach in the model.
+4. If the positive scenario cannot be realized due to the strict clearance rule, explicitly document this limitation in both model comments and requirements traceability.
+
+=== ASSUMPTIONS REVIEW ===
+- Remove: There is NO requirement that at least one user has clearance for both mutually exclusive roles. Do not assume this; clarify its absence in model documentation.
+- Keep: At least one pair of mutually exclusive roles must exist in every scope, per model intent.
+- Keep: The persistent minimum clearance constraint MUST always apply, even if it blocks the edge-case scenario.
+- Confirm: The choice of how mutuallyExclusiveWith is enforced (fact vs. instance population) is a modeling decision; make this explicit.
+
+=== STRONGER CHECKS ===
+1. Add a negative assertion: Ensure that, unless all constraints (including strict minimum clearance) are met, it is impossible for a user to receive both mutually exclusive roles, even during Emergency mode.
+2. Add a predicate/assertion to check that mutuallyExclusiveWith is not empty in all runs, or clarify the chosen modeling approach.
+3. Remove any check/assertion that assumes or requires a user with sufficient clearance for both roles unless requirements are updated accordingly.
+
+=== REQUIREMENT_UPDATES ===
+1. Update R3.2 and related requirements to clarify that the persistent minimum clearance rule always applies, even if it prevents realization of the positive mutual exclusion suspension scenario.
+2. Explicitly state there is no requirement to guarantee a user with clearance for both mutually exclusive roles in every scope; vacuity in positive scenario predicates may be permissible if blocked by system constraints.
+3. Specify in requirements documentation whether mutuallyExclusiveWith must always be populated as a fact or if instance-level population is sufficient; clarify modeling intent.
+
+=== USER QUESTIONS ===
+1. (Resolved per user review) There is no requirement for at least one user to have clearance for both mutually exclusive roles. No further action required unless requirements change.
+2. Do you want to enforce mutuallyExclusiveWith as a fact (always populated) or via instance population/initialization? Please confirm so the model can be aligned accordingly.
+3. (Resolved) The persistent minimum clearance rule must always apply, even if it blocks the edge-case scenario; this is now reflected in the recommended requirement updates and modeling approach.
+
+=== HANDOFF TO RE ===
+1. Update requirements to reflect that the persistent minimum clearance rule is non-negotiable and may block the positive edge-case scenario.
+2. Remove any implicit or explicit guarantee that a user with sufficient clearance for both mutually exclusive roles must exist in every scope.
+3. Clarify in both model and requirements how the mutuallyExclusiveWith relation should be populated (fact vs. instance), documenting the modeling choice.
+4. Add/strengthen negative assertions to confirm that no user can be delegated both mutually exclusive roles unless all strict system constraints are satisfied.
+5. Document that vacuity in the positive scenario assertion is permissible under current requirements, since the system-level rule may prevent its realization.
+```
+

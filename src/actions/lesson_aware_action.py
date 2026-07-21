@@ -94,6 +94,19 @@ class LessonAwareAction(Action):
             # Fall back to tag-based retrieval for current action
             return self.get_lessons(limit=limit)
 
+    def get_modeling_conventions(self) -> str:
+        """
+        Get ALL established modeling conventions, formatted for prompt inclusion.
+
+        Conventions are model-wide encoding decisions and are always injected in
+        full (not agent/action scoped, not semantically filtered), so the model
+        builder can rely on every one of them each iteration.
+
+        Returns:
+            Formatted conventions string, or "" if none recorded yet.
+        """
+        return self.context.learning.get_conventions_for_prompt()
+
     def get_patterns(self, limit: int = 5) -> List[str]:
         """
         Get patterns for this agent/action.
@@ -238,7 +251,7 @@ class LessonAwareAction(Action):
 
     # ========== Utility Methods ==========
 
-    def parse_and_record_learning(self, output: str) -> str:
+    def parse_and_record_learning(self, output: str, defer: bool = False, pending_attr: str = None) -> str:
         """
         Parse output for learning signals, record them, and return cleaned output.
 
@@ -246,10 +259,33 @@ class LessonAwareAction(Action):
 
         Args:
             output: Agent output text to parse
+            defer: If True, don't store lessons yet — stage them on
+                `self.context.<pending_attr>` until a later confirmation
+                check (e.g. issue resolved next iteration) decides whether
+                to store or discard them. Events are still stored immediately.
+            pending_attr: Name of the context attribute to stage the pending
+                lesson onto. Required when defer=True.
 
         Returns:
             Cleaned output with learning markers removed
         """
+        if defer:
+            cleaned_output, lessons = self.context.learning.parse_and_record(
+                agent_output=output,
+                agent_name=self.agent_name,
+                action_name=self.action_name,
+                iteration=self.context.iteration.current,
+                defer_storage=True
+            )
+            pending = {
+                'lessons': lessons,
+                'agent_name': self.agent_name,
+                'action_name': self.action_name,
+                'source_iteration': self.context.iteration.current,
+            } if lessons else None
+            setattr(self.context, pending_attr, pending)
+            return cleaned_output
+
         return self.context.learning.parse_and_record(
             agent_output=output,
             agent_name=self.agent_name,

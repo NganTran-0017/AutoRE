@@ -1,0 +1,617 @@
+--- a/src/workflow.py
++++ b/src/workflow.py
+@@ -1277,23 +1277,8 @@
+                 # Store feedback as official
+                 official_feedback = draft_feedback
+ 
+-                self.context.artifacts.store_feedback(
+-                    self.context.iteration.current,
+-                    official_feedback,
+-                    action_type="GenerateSyntaxRepairInstruction"
+-                )
+-
+-                # Save feedback to disk
+-                self.context.file_manager.save_feedback(
+-                    {"feedback": official_feedback, "final_convergence": False},  # Syntax repairs don't have convergence
+-                    iteration=self.context.iteration.current
+-                )
+-
+-                # Store official evaluator feedback in regression log
+-                entry = self.context.regression_log.get_entry(self.context.iteration.current)
+-                if entry:
+-                    entry.evaluator_feedback = official_feedback
+-                    self.context.regression_log._save_to_file()
++                # Syntax repairs never trigger convergence
++                self._store_final_feedback(official_feedback, False, "GenerateSyntaxRepairInstruction")
+ 
+                 self.logger.log("✓ Syntax repair instructions stored")
+ 
+@@ -1451,32 +1436,9 @@
+                 # experiments here in case its rewrite dropped them.
+                 final_feedback = self._inject_diagnostic_experiments(final_feedback, diagnostic_text)
+ 
+-                # Parse final convergence from refined feedback
+-                convergence_match = re.search(
+-                    r'===\s*CONVERGENCE_RECOMMENDATION\s*===.*?Status:\s*(TRUE|FALSE)',
+-                    final_feedback,
+-                    re.IGNORECASE | re.DOTALL
+-                )
+-                final_convergence = convergence_match.group(1).upper() == "TRUE" if convergence_match else False
+-
+-                # Update artifacts
+-                self.context.artifacts.store_feedback(
+-                    self.context.iteration.current,
+-                    final_feedback,
+-                    action_type="GenerateSemanticFeedback"
+-                )
+-
+-                # Save feedback to disk
+-                self.context.file_manager.save_feedback(
+-                    {"feedback": final_feedback, "final_convergence": final_convergence},
+-                    iteration=self.context.iteration.current
+-                )
+-
+-                # Store evaluator feedback in regression log
+-                entry = self.context.regression_log.get_entry(self.context.iteration.current)
+-                if entry:
+-                    entry.evaluator_feedback = final_feedback
+-                    self.context.regression_log._save_to_file()
++                # Parse final convergence from refined feedback and persist it
++                final_convergence = self._parse_convergence(final_feedback)
++                self._store_final_feedback(final_feedback, final_convergence, "GenerateSemanticFeedback")
+ 
+                 # Record user preference
+                 self.context.user_preferences.add_preference(
+@@ -1532,12 +1494,7 @@
+                     print("✓ No user feedback provided - using draft feedback")
+ 
+                 # Parse preliminary convergence from draft feedback
+-                convergence_match = re.search(
+-                    r'===\s*CONVERGENCE_RECOMMENDATION\s*===.*?Status:\s*(TRUE|FALSE)',
+-                    draft_feedback,
+-                    re.IGNORECASE | re.DOTALL
+-                )
+-                preliminary_convergence = convergence_match.group(1).upper() == "TRUE" if convergence_match else False
++                preliminary_convergence = self._parse_convergence(draft_feedback)
+ 
+                 # Store draft as official final feedback (no user refinement)
+                 official_feedback = draft_feedback
+@@ -1546,23 +1503,7 @@
+                 # reached REPAIR INSTRUCTIONS even if GenerateSemanticFeedback dropped them.
+                 official_feedback = self._inject_diagnostic_experiments(official_feedback, diagnostic_text)
+ 
+-                self.context.artifacts.store_feedback(
+-                    self.context.iteration.current,
+-                    official_feedback,
+-                    action_type="GenerateSemanticFeedback"
+-                )
+-
+-                # Save feedback to disk
+-                self.context.file_manager.save_feedback(
+-                    {"feedback": official_feedback, "final_convergence": preliminary_convergence},
+-                    iteration=self.context.iteration.current
+-                )
+-
+-                # Store official evaluator feedback in regression log
+-                entry = self.context.regression_log.get_entry(self.context.iteration.current)
+-                if entry:
+-                    entry.evaluator_feedback = official_feedback
+-                    self.context.regression_log._save_to_file()
++                self._store_final_feedback(official_feedback, preliminary_convergence, "GenerateSemanticFeedback")
+ 
+                 # If Evaluator asked questions but user didn't answer, check for agent assumptions
+                 # IMPORTANT: Only capture assumptions made in response to unanswered user questions,
+@@ -1620,6 +1561,32 @@
+                     "final_convergence": preliminary_convergence
+                 }
+ 
++    def _parse_convergence(self, feedback: str) -> bool:
++        """Parse the CONVERGENCE_RECOMMENDATION Status (TRUE/FALSE) from feedback text."""
++        import re
++        match = re.search(
++            r'===\s*CONVERGENCE_RECOMMENDATION\s*===.*?Status:\s*(TRUE|FALSE)',
++            feedback,
++            re.IGNORECASE | re.DOTALL
++        )
++        return match.group(1).upper() == "TRUE" if match else False
++
++    def _store_final_feedback(self, feedback: str, final_convergence: bool, action_type: str) -> None:
++        """Persist official feedback to artifacts, disk, and the regression log."""
++        self.context.artifacts.store_feedback(
++            self.context.iteration.current,
++            feedback,
++            action_type=action_type
++        )
++        self.context.file_manager.save_feedback(
++            {"feedback": feedback, "final_convergence": final_convergence},
++            iteration=self.context.iteration.current
++        )
++        entry = self.context.regression_log.get_entry(self.context.iteration.current)
++        if entry:
++            entry.evaluator_feedback = feedback
++            self.context.regression_log._save_to_file()
++
+     def _extract_section(
+         self,
+         text: str,
+@@ -1887,15 +1854,12 @@
+ 
+         regression_fields = parse_re_response_for_regression(updated_model_response)
+ 
+-        # Extract the actual model code (after the regression fields)
+-        # The model code is in the ```alloy code block
+-        import re
+-        model_match = re.search(r'```alloy\s*\n(.*?)\n```', updated_model_response, re.DOTALL)
+-        if model_match:
+-            updated_model = model_match.group(1)
+-        else:
+-            # Fallback: use the whole response if no code block found
+-            updated_model = updated_model_response
++        # Extract the actual model code (after the regression fields) from the
++        # ```alloy code block; falls back to the whole response. The shared
++        # extractor also fixes the old local regex's edge case that required a
++        # newline before the closing fence.
++        from src.utils.alloy_model_validator import extract_alloy_code
++        updated_model = extract_alloy_code(updated_model_response)
+ 
+         # Save to file
+         model_file = self.context.file_manager.save_alloy_model(
+--- a/src/actions/requirement_actions.py
++++ b/src/actions/requirement_actions.py
+@@ -374,17 +374,11 @@
+         Returns:
+             Tuple of (is_valid: bool, message: str)
+         """
+-        import re
+-        
+-        # Extract alloy code from response (if wrapped in ```alloy blocks)
+-        alloy_block_pattern = r'```alloy\s*\n(.*?)```'
+-        match = re.search(alloy_block_pattern, updated_response, re.DOTALL)
+-        
+-        if match:
+-            updated_model = match.group(1).strip()
+-        else:
+-            # If no code block, assume the whole response is the model
+-            updated_model = updated_response.strip()
++        from src.utils.alloy_model_validator import extract_alloy_code
++
++        # Extract alloy code from response (if wrapped in ```alloy blocks);
++        # falls back to the whole response when no code block is present
++        updated_model = extract_alloy_code(updated_response)
+         
+         # Calculate lengths (using line count as primary metric)
+         current_lines = len([line for line in current_model.split('\n') if line.strip()])
+--- a/src/utils/artifact_store.py
++++ b/src/utils/artifact_store.py
+@@ -52,30 +52,10 @@
+         This ensures that repair instructions (=== FIX INTENT === etc.) are not included
+         in the stored model that gets shown to the Evaluator.
+         """
+-        import re
+-        
+-        content = content.strip()
+-        
+-        # Try to extract code from markdown fence (```alloy ... ```)
+-        # Look for the first alloy code block in the response
+-        alloy_block_pattern = r'```alloy\s*\n(.*?)```'
+-        match = re.search(alloy_block_pattern, content, re.DOTALL)
+-        
+-        if match:
+-            # Found alloy code block - extract just the code
+-            content = match.group(1).strip()
+-        elif content.startswith('```'):
+-            # Generic code block at start - strip fences
+-            lines = content.split('\n')
+-            # Remove first line (```alloy or ```)
+-            if lines[0].startswith('```'):
+-                lines = lines[1:]
+-            # Remove last line if it's a closing fence
+-            if lines and lines[-1].strip() == '```':
+-                lines = lines[:-1]
+-            content = '\n'.join(lines)
+-        # else: assume it's already plain Alloy code
+-        
++        from .alloy_model_validator import extract_alloy_code
++
++        content = extract_alloy_code(content, strip_generic_fence=True)
++
+         self.alloy_models[iteration] = content
+ 
+     def get_alloy_model(self, iteration: int) -> Optional[str]:
+--- a/src/utils/regression_log.py
++++ b/src/utils/regression_log.py
+@@ -1294,6 +1294,51 @@
+     return f"{len(failed_fixes)} total fix attempts for this issue have failed"
+ 
+ 
++def _parse_issue_components(issue: str):
++    """
++    Parse an issue description into its components.
++
++    Handles the three historical syntax-error formats plus unsat-predicate and
++    counterexample lists (previously duplicated inline in
++    get_same_issue_failed_fixes for the current issue and for each entry).
++
++    Returns:
++        (syntax_block, syntax_construct, unsat_predicates, counterexamples)
++        where the first two are Optional[str] and the last two are sets.
++    """
++    import re
++
++    syntax_block = None
++    syntax_construct = None
++    unsat_preds = set()
++    counterexamples = set()
++
++    # Format 1 (current): "syntax error at line X in block_name"
++    syntax_match = re.search(r'syntax error at line \d+ in (.+?)(?:;|$)', issue)
++    if syntax_match:
++        syntax_block = syntax_match.group(1).strip()
++    else:
++        # Format 2 (old): "syntax error in fact ExistingSystem"
++        syntax_match = re.search(r'syntax error in (.+?)(?:;|$)', issue)
++        if syntax_match:
++            syntax_block = syntax_match.group(1).strip()
++        else:
++            # Format 3 (older): "syntax error at line 4 (open statement)"
++            syntax_match = re.search(r'syntax error at line \d+ \((.+?)\)', issue)
++            if syntax_match:
++                syntax_construct = syntax_match.group(1).strip()
++
++    unsat_match = re.search(r'unsat predicate: (.+?)(?:;|$)', issue)
++    if unsat_match:
++        unsat_preds = set(p.strip() for p in unsat_match.group(1).split(','))
++
++    ce_match = re.search(r'counterexample: (.+?)(?:;|$)', issue)
++    if ce_match:
++        counterexamples = set(c.strip() for c in ce_match.group(1).split(','))
++
++    return syntax_block, syntax_construct, unsat_preds, counterexamples
++
++
+ def get_same_issue_failed_fixes(
+     current_issue: str,
+     regression_log_entries: List['RegressionLogEntry']
+@@ -1318,42 +1363,10 @@
+     failed_fixes = []
+ 
+     # Parse current issue to extract components
+-    current_syntax_block = None
+-    current_syntax_construct = None
+-    current_unsat_preds = set()
+-    current_counterexamples = set()
+-
+     _debug_log(f"[FAILED_FIX_HISTORY] Searching for previous failures matching issue: '{current_issue}'")
+-    
+-    # Extract from current issue - handle multiple formats:
+-    # Format 1 (current): "syntax error at line X in block_name"
+-    # Format 2 (old): "syntax error in fact ExistingSystem"
+-    # Format 3 (older): "syntax error at line 4 (open statement)"
+ 
+-    # Try current format first (at line X in block_name)
+-    syntax_match = re.search(r'syntax error at line \d+ in (.+?)(?:;|$)', current_issue)
+-    if syntax_match:
+-        current_syntax_block = syntax_match.group(1).strip()
+-    else:
+-        # Try old format (in block_name)
+-        syntax_match = re.search(r'syntax error in (.+?)(?:;|$)', current_issue)
+-        if syntax_match:
+-            current_syntax_block = syntax_match.group(1).strip()
+-        else:
+-            # Try older format (at line X (construct))
+-            syntax_match = re.search(r'syntax error at line \d+ \((.+?)\)', current_issue)
+-            if syntax_match:
+-                current_syntax_construct = syntax_match.group(1).strip()
+-    
+-    unsat_match = re.search(r'unsat predicate: (.+?)(?:;|$)', current_issue)
+-    if unsat_match:
+-        preds = unsat_match.group(1).split(',')
+-        current_unsat_preds = set(p.strip() for p in preds)
+-
+-    ce_match = re.search(r'counterexample: (.+?)(?:;|$)', current_issue)
+-    if ce_match:
+-        ces = ce_match.group(1).split(',')
+-        current_counterexamples = set(c.strip() for c in ces)
++    (current_syntax_block, current_syntax_construct,
++     current_unsat_preds, current_counterexamples) = _parse_issue_components(current_issue)
+ 
+     _debug_log(f"[FAILED_FIX_HISTORY] Extracted components: block='{current_syntax_block}', construct='{current_syntax_construct}'")
+ 
+@@ -1361,35 +1374,8 @@
+     for entry in regression_log_entries:
+         if entry.resolved_target_issue is False and entry.issue:
+             # Parse entry issue
+-            entry_syntax_block = None
+-            entry_syntax_construct = None
+-            entry_unsat_preds = set()
+-            entry_counterexamples = set()
+-
+-            # Try current format first (at line X in block_name)
+-            syntax_match = re.search(r'syntax error at line \d+ in (.+?)(?:;|$)', entry.issue)
+-            if syntax_match:
+-                entry_syntax_block = syntax_match.group(1).strip()
+-            else:
+-                # Try old format (in block_name)
+-                syntax_match = re.search(r'syntax error in (.+?)(?:;|$)', entry.issue)
+-                if syntax_match:
+-                    entry_syntax_block = syntax_match.group(1).strip()
+-                else:
+-                    # Try older format (at line X (construct))
+-                    syntax_match = re.search(r'syntax error at line \d+ \((.+?)\)', entry.issue)
+-                    if syntax_match:
+-                        entry_syntax_construct = syntax_match.group(1).strip()
+-            
+-            unsat_match = re.search(r'unsat predicate: (.+?)(?:;|$)', entry.issue)
+-            if unsat_match:
+-                preds = unsat_match.group(1).split(',')
+-                entry_unsat_preds = set(p.strip() for p in preds)
+-            
+-            ce_match = re.search(r'counterexample: (.+?)(?:;|$)', entry.issue)
+-            if ce_match:
+-                ces = ce_match.group(1).split(',')
+-                entry_counterexamples = set(c.strip() for c in ces)
++            (entry_syntax_block, entry_syntax_construct,
++             entry_unsat_preds, entry_counterexamples) = _parse_issue_components(entry.issue)
+             
+             # Check if any component matches
+             match = False
+@@ -1750,8 +1736,9 @@
+     import re
+ 
+     # Try to find the FIX INTENT section
+-    # Pattern: [FIX INTENT]: followed by content until next section or end
+-    pattern = r'\[FIX INTENT\]:?\s*\n(.*?)(?:\n\[(?:REPAIR INSTRUCTIONS|RATIONALE|LESSON|DIAGNOSIS)\]:|$)'
++    # Pattern: [FIX INTENT]: followed by content (same line or next line)
++    # until the next section header or end of text
++    pattern = r'\[FIX INTENT\]:?\s*(.*?)(?:\n\[(?:REPAIR INSTRUCTIONS|RATIONALE|LESSON|DIAGNOSIS)\]:|$)'
+ 
+     match = re.search(pattern, feedback, re.DOTALL | re.IGNORECASE)
+ 
+--- a/src/utils/error_normalizer.py
++++ b/src/utils/error_normalizer.py
+@@ -34,6 +34,7 @@
+ from typing import Any, Dict, List, Optional, Tuple
+ 
+ from .alloy_executor import BLOCK_KEYWORDS, find_containing_block
++from .logger import SafeLogMixin
+ 
+ 
+ # Ordered classification rules. First matching rule wins.
+@@ -133,16 +134,12 @@
+ ]
+ 
+ 
+-class ErrorNormalizer:
++class ErrorNormalizer(SafeLogMixin):
+     """Deterministic workflow step that normalizes the primary Alloy error."""
+ 
+     def __init__(self, logger=None):
+         self.logger = logger
+ 
+-    def _log(self, message: str) -> None:
+-        if self.logger and hasattr(self.logger, "log"):
+-            self.logger.log(message)
+-
+     def run(self, analysis: Dict[str, Any], model_path: Optional[str] = None) -> Optional[Dict[str, Any]]:
+         """
+         Normalize the primary syntax/type error in an analyzer result.
+--- a/src/utils/logger.py
++++ b/src/utils/logger.py
+@@ -6,6 +6,21 @@
+ import yaml
+ 
+ 
++class SafeLogMixin:
++    """Optional-logger logging shared by the deterministic post-analysis
++    components (ErrorNormalizer, IssuePatternTracker, SemanticIssueTracker).
++
++    Subclasses set ``self.logger`` (any object with a .log(str) method, or
++    None); _log is then a safe no-op when no logger is configured.
++    """
++
++    logger = None
++
++    def _log(self, message: str) -> None:
++        if self.logger and hasattr(self.logger, "log"):
++            self.logger.log(message)
++
++
+ class AutoRELogger:
+     """Logger that writes to both console and log file."""
+ 
+--- a/src/utils/issue_pattern_tracker.py
++++ b/src/utils/issue_pattern_tracker.py
+@@ -32,6 +32,8 @@
+ 
+ from typing import Any, Dict, List, Optional
+ 
++from .logger import SafeLogMixin
++
+ 
+ # Pattern type constants
+ NEW_ISSUE = "new_issue"
+@@ -43,7 +45,7 @@
+ RESOLVED_OR_PROGRESSED = "resolved_or_progressed"
+ 
+ 
+-class IssuePatternTracker:
++class IssuePatternTracker(SafeLogMixin):
+     """Deterministic workflow step that classifies the current error pattern."""
+ 
+     def __init__(self, window: int = 6, plateau_consecutive: int = 3, logger=None):
+@@ -59,10 +61,6 @@
+         self.plateau_consecutive = plateau_consecutive
+         self.logger = logger
+ 
+-    def _log(self, message: str) -> None:
+-        if self.logger and hasattr(self.logger, "log"):
+-            self.logger.log(message)
+-
+     def run(
+         self,
+         current_iteration: int,
+--- a/src/utils/repair_plateau_detector.py
++++ b/src/utils/repair_plateau_detector.py
+@@ -29,7 +29,6 @@
+   3 REWRITE_BLOCK      repair_plateau (4+ identical errors in a row)
+ """
+ 
+-import re
+ from typing import Any, Dict, List, Optional
+ 
+ 
+@@ -58,14 +57,16 @@
+ 
+ 
+ def _extract_evaluator_fix_intent(feedback: Optional[str]) -> Optional[str]:
+-    """Pull the [FIX INTENT] line out of a stored Evaluator feedback text."""
++    """Pull the [FIX INTENT] section out of a stored Evaluator feedback text,
++    collapsed to a single line and truncated for directive conciseness.
++
++    Delegates to the canonical regression_log.extract_fix_intent parser
++    (previously a near-duplicate regex lived here)."""
+     if not feedback:
+         return None
+-    match = re.search(r"\[FIX INTENT\]:?\s*\n?\s*(.+)", feedback)
+-    if match:
+-        intent = match.group(1).strip()
+-        return intent[:300] if intent else None
+-    return None
++    from .regression_log import extract_fix_intent
++    intent = " ".join(extract_fix_intent(feedback).split())
++    return intent[:300] if intent else None
+ 
+ 
+ def collect_failed_fixes(
+--- a/src/utils/alloy_model_validator.py
++++ b/src/utils/alloy_model_validator.py
+@@ -36,6 +36,39 @@
+     return '\n'.join(stripped_lines)
+ 
+ 
++def extract_alloy_code(text: str, strip_generic_fence: bool = False) -> str:
++    """
++    Extract Alloy code from an LLM response that may wrap it in markdown fences.
++
++    Shared by artifact_store, file_manager, workflow, requirement_actions and
++    the validators below (previously five near-identical local copies).
++
++    Args:
++        text: Raw response text (may contain ```alloy ... ``` fences, a generic
++              ``` fence, or already-plain Alloy code).
++        strip_generic_fence: Also strip a generic ``` fence when the text starts
++              with one and no ```alloy block was found (storage-path behavior).
++
++    Returns:
++        The extracted code, stripped; falls back to the stripped input text.
++    """
++    text = text.strip()
++
++    match = re.search(r'```alloy\s*\n(.*?)```', text, re.DOTALL)
++    if match:
++        return match.group(1).strip()
++
++    if strip_generic_fence and text.startswith('```'):
++        lines = text.split('\n')
++        if lines[0].startswith('```'):
++            lines = lines[1:]
++        if lines and lines[-1].strip() == '```':
++            lines = lines[:-1]
++        return '\n'.join(lines)
++
++    return text
++
++
+ def validate_alloy_model_completeness(
+     model_code: str,
+     check_structure: bool = True,
+@@ -61,13 +94,7 @@
+     issues = []
+ 
+     # Extract code from markdown fences if present
+-    alloy_block_pattern = r'```alloy\s*\n(.*?)```'
+-    match = re.search(alloy_block_pattern, model_code, re.DOTALL)
+-
+-    if match:
+-        clean_code = match.group(1).strip()
+-    else:
+-        clean_code = model_code.strip()
++    clean_code = extract_alloy_code(model_code)
+ 
+     # Check 1: Snippet indicators
+     if check_snippets:
+@@ -140,9 +167,7 @@
+         - has_all_requirements: Whether All_Requirements predicate exists
+     """
+     # Extract clean code
+-    alloy_block_pattern = r'```alloy\s*\n(.*?)```'
+-    match = re.search(alloy_block_pattern, model_code, re.DOTALL)
+-    clean_code = match.group(1).strip() if match else model_code.strip()
++    clean_code = extract_alloy_code(model_code)
+ 
+     # Count elements
+     structure = {
+--- a/src/utils/file_manager.py
++++ b/src/utils/file_manager.py
+@@ -138,29 +138,9 @@
+         Returns:
+             Path to saved file
+         """
+-        import re
+-        
+-        content = content.strip()
+-        
+-        # Try to extract code from markdown fence (```alloy ... ```)
+-        # Look for the first alloy code block in the response
+-        alloy_block_pattern = r'```alloy\s*\n(.*?)```'
+-        match = re.search(alloy_block_pattern, content, re.DOTALL)
+-        
+-        if match:
+-            # Found alloy code block - extract just the code
+-            content = match.group(1).strip()
+-        elif content.startswith('```'):
+-            # Generic code block at start - strip fences
+-            lines = content.split('\n')
+-            # Remove first line (```alloy or ```)
+-            if lines[0].startswith('```'):
+-                lines = lines[1:]
+-            # Remove last line if it's a closing fence
+-            if lines and lines[-1].strip() == '```':
+-                lines = lines[:-1]
+-            content = '\n'.join(lines)
+-        # else: assume it's already plain Alloy code
++        from .alloy_model_validator import extract_alloy_code
++
++        content = extract_alloy_code(content, strip_generic_fence=True)
+ 
+         filepath = self.models_dir / f"AlloyModel__{iteration}.als"
+         with open(filepath, 'w') as f:
+--- a/src/utils/semantic_issue_tracker.py
++++ b/src/utils/semantic_issue_tracker.py
+@@ -39,12 +39,14 @@
+ 
+ from typing import Any, Dict, List, Optional
+ 
++from .logger import SafeLogMixin
++
+ 
+ UNSAT_PREDICATE = "unsat_predicate"
+ COUNTEREXAMPLE = "counterexample"
+ 
+ 
+-class SemanticIssueTracker:
++class SemanticIssueTracker(SafeLogMixin):
+     """Deterministic tracker of persistent semantic issues across iterations."""
+ 
+     def __init__(
+@@ -70,10 +72,6 @@
+         self.total_threshold = total_threshold
+         self.logger = logger
+ 
+-    def _log(self, message: str) -> None:
+-        if self.logger and hasattr(self.logger, "log"):
+-            self.logger.log(message)
+-
+     def run(
+         self,
+         current_iteration: int,

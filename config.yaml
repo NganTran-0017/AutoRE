@@ -44,9 +44,9 @@ agents:
 memory:
   semantic_deduplication:
     enabled: true
-    similarity_threshold: 0.85  # 85% semantic similarity = duplicate
-    merge_similar_lessons: true  # Use MemoryAssistant to merge
-    update_min_length_ratio: 1.1  # New must be 10%+ longer to trigger merge
+    merge_threshold: 0.7    # sim in [merge_threshold, drop_threshold) -> merge new with existing
+    drop_threshold: 0.91    # sim >= drop_threshold -> drop new as duplicate
+    merge_similar_lessons: true  # Use MemoryAssistant to merge (for the merge band)
 
 # Embedding model settings (for semantic similarity)
 embeddings:
@@ -56,6 +56,6 @@ embeddings:
 # User interaction (CLI-based)
 user_interaction:
   mode: "cli"  # CLI-based interaction
-  response_timeout: 300  # seconds (5 minutes) - system proceeds with no feedback after timeout
+  response_timeout: 1200  # seconds (20 minutes) - system proceeds with no feedback after timeout
   multiline_input: true  # Allow multi-line input (end with 'END')
   log_directory: "Output/outputlog"  # Directory for session logs (format: MMDDYY.log)

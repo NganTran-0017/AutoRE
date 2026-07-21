@@ -1,0 +1,25 @@
+{
+  "pred R1R2": [
+    0,
+    1
+  ],
+  "pred R1R2R3": [
+    2,
+    3,
+    7
+  ],
+  "assert assertR2_EventualReturnToNormal": [
+    4
+  ],
+  "sig Delegation": [
+    5
+  ],
+  "fun rolesHeld": [
+    6
+  ],
+  "fun leq": [
+    8,
+    9,
+    10
+  ]
+}

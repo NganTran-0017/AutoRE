@@ -58,6 +58,27 @@ class FileManager:
         print(f"Requirements saved to: {filepath}")
         return filepath
 
+    def save_original_requirements(self, content: str) -> Path:
+        """
+        Persist the original input requirements once (immutable ground truth
+        for drift protection). Never overwrites an existing copy. The name
+        does not match the Reqs_*.txt glob, so iteration lookups ignore it.
+        """
+        filepath = self.reqs_dir / "original_requirements.txt"
+        if not filepath.exists():
+            with open(filepath, 'w') as f:
+                f.write(content)
+            print(f"Original requirements preserved at: {filepath}")
+        return filepath
+
+    def load_original_requirements(self) -> Optional[str]:
+        """Load the preserved original input requirements, if any."""
+        filepath = self.reqs_dir / "original_requirements.txt"
+        if filepath.exists():
+            with open(filepath, 'r') as f:
+                return f.read()
+        return None
+
     def load_requirements(self, iteration: int) -> Optional[str]:
         """
         Load requirements document.
@@ -138,29 +159,9 @@ class FileManager:
         Returns:
             Path to saved file
         """
-        import re
-        
-        content = content.strip()
-        
-        # Try to extract code from markdown fence (```alloy ... ```)
-        # Look for the first alloy code block in the response
-        alloy_block_pattern = r'```alloy\s*\n(.*?)```'
-        match = re.search(alloy_block_pattern, content, re.DOTALL)
-        
-        if match:
-            # Found alloy code block - extract just the code
-            content = match.group(1).strip()
-        elif content.startswith('```'):
-            # Generic code block at start - strip fences
-            lines = content.split('\n')
-            # Remove first line (```alloy or ```)
-            if lines[0].startswith('```'):
-                lines = lines[1:]
-            # Remove last line if it's a closing fence
-            if lines and lines[-1].strip() == '```':
-                lines = lines[:-1]
-            content = '\n'.join(lines)
-        # else: assume it's already plain Alloy code
+        from .alloy_model_validator import extract_alloy_code
+
+        content = extract_alloy_code(content, strip_generic_fence=True)
 
         filepath = self.models_dir / f"AlloyModel__{iteration}.als"
         with open(filepath, 'w') as f:

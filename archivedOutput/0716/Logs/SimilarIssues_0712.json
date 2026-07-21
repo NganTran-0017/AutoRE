@@ -1,0 +1,52 @@
+{
+  "pred R1R2": [
+    0,
+    1,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    29
+  ],
+  "pred R1R2R3": [
+    2,
+    3,
+    7,
+    22,
+    24,
+    25,
+    26,
+    27
+  ],
+  "assert assertR2_EventualReturnToNormal": [
+    4
+  ],
+  "sig Delegation": [
+    5
+  ],
+  "fun rolesHeld": [
+    6
+  ],
+  "fun leq": [
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+  ],
+  "fact ExistingSystem": [
+    23
+  ],
+  "fact EmergencyModeDurationAndExit": [
+    30,
+    31,
+    32,
+    33,
+    34
+  ]
+}

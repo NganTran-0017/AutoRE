@@ -6,6 +6,21 @@ from typing import Optional
 import yaml
 
 
+class SafeLogMixin:
+    """Optional-logger logging shared by the deterministic post-analysis
+    components (ErrorNormalizer, IssuePatternTracker, SemanticIssueTracker).
+
+    Subclasses set ``self.logger`` (any object with a .log(str) method, or
+    None); _log is then a safe no-op when no logger is configured.
+    """
+
+    logger = None
+
+    def _log(self, message: str) -> None:
+        if self.logger and hasattr(self.logger, "log"):
+            self.logger.log(message)
+
+
 class AutoRELogger:
     """Logger that writes to both console and log file."""
 
@@ -136,7 +151,10 @@ class AutoRELogger:
         self.log(f"{'='*80}", to_console=False)
         self.log("\n--- PROMPT SENT TO LLM ---", to_console=False)
         self.log(prompt, to_console=False)
-        self.log(f"\n--- {action_name} --- RESPONSE FROM LLM ---", to_console=False)
+        if iteration is not None:
+            self.log(f"\n--- {action_name} - Iteration {iteration} --- RESPONSE FROM LLM ---", to_console=False)
+        else:
+            self.log(f"\n--- {action_name} --- RESPONSE FROM LLM ---", to_console=False)
         self.log(response, to_console=False)
         self.log(f"{'='*80}\n", to_console=False)
 
@@ -163,9 +181,18 @@ class AutoRELogger:
         self.log("\n--- ALLOY STDERR ---", to_console=False)
         self.log(stderr if stderr else "(empty)", to_console=False)
 
-        self.log("\n--- ANALYSIS RESULTS ---", to_console=False)
+        # Log analysis summary (not full details with instances/counterexamples)
+        self.log("\n--- ANALYSIS SUMMARY ---", to_console=False)
+        # analysis parameter is already the analysis dict (not wrapped)
+        summary_info = {
+            'has_syntax_errors': analysis.get('has_syntax_errors', False),
+            'has_counterexamples': analysis.get('has_counterexamples', False),
+            'num_instances': len(analysis.get('instances', [])),
+            'num_counterexamples': len(analysis.get('counterexamples', [])),
+            'num_unsat_run_commands': len(analysis.get('unsat_run_commands', []))
+        }
         import json
-        self.log(json.dumps(analysis, indent=2), to_console=False)
+        self.log(json.dumps(summary_info, indent=2), to_console=False)
         self.log(f"{'='*80}\n", to_console=False)
 
     def log_file_update(self, file_path: str, description: str = "Updated"):

@@ -1,0 +1,54 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples (assertR3_MutExScenario_Positive fails)
+- Predicates: Satisfiable (all key predicates produce instances)
+- Instances: Suspicious (satisfying instance for mutual exclusion suspension may be trivial or degenerate)
+- Vacuity: Possible (assertion fails not because of a true violation, but because the scenario is never realized in the given scope/model)
+- Overall: Incomplete
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+1. Strengthen Scenario_MutualExclusionSuspended_Positive and/or the model to guarantee that, during Emergency mode with exactly two distinct emAdmins, at least one user can actually be assigned (hold) two mutually exclusive roles. This may require:
+   - Adding facts or scenario-specific constraints to force the assignment of both mutually exclusive roles to some user in Emergency mode.
+   - Ensuring that the model allows delegation/assignment of multiple roles to a user during Emergency, and that these roles can be mutually exclusive.
+2. Update the mutuallyExclusiveWith relation: remove any self-exclusion (roles being mutually exclusive with themselves), as per review comment.
+3. Consider increasing the scope for State, User, and Role to ensure that enough atoms are present to realize the scenario (at least one user, at least two mutually exclusive roles, and Emergency state with two emAdmins).
+4. Add explicit scenario predicates (and corresponding run commands) that guarantee the presence of at least one user who can hold two mutually exclusive roles during Emergency mode with exactly two emAdmins, ensuring both roles are assigned to the user and are declared as mutually exclusive.
+5. If rolesHeld[u, s] cannot become non-empty for mutually exclusive roles in Emergency, adjust the assignment/delegation logic to allow this, but only under the correct Emergency conditions.
+
+=== ASSUMPTIONS REVIEW ===
+- Keep: Emergency mode suspension of mutual exclusion is to be tested only when exactly two distinct emAdmins are present.
+- Keep: No requirement that two administrators must always exist; only that Emergency entry requires exactly two.
+- Review: The model may be (too) restrictive in how roles are delegated or assigned during Emergency, preventing realization of the intended scenario.
+- Confirm: Set-based semantics for emAdmins cardinality; no duplicates in sets.
+- Reduce: Remove role self-exclusion in mutuallyExclusiveWith, as confirmed by user.
+
+=== STRONGER CHECKS ===
+1. Add an explicit assertion or scenario predicate that constructs a state where:
+   - (a) System is in Emergency mode,
+   - (b) Exactly two distinct emAdmins,
+   - (c) At least one user holds two roles that are mutually exclusive,
+   - (d) Both roles are delegated/assigned during that Emergency state.
+2. Add explicit negative test cases (with expect 0) for the following:
+   - A user holding mutually exclusive roles in Normal mode (already covered; ensure it is enforced).
+   - Role assignment of mutually exclusive roles to a user during Emergency with less than or more than two emAdmins.
+
+=== REQUIREMENT_UPDATES ===
+1. Update R3.2 to require not only that mutual exclusion is "suspended" in Emergency with two emAdmins, but that the model must explicitly demonstrate that at least one user can be assigned two mutually exclusive roles in this scenario (edge case scenario for testing).
+2. Add to the requirements that the positive scenario for mutual exclusion suspension must be demonstrably possible in the model (i.e., not vacuously true or false).
+3. Clarify that role self-exclusion is not permitted in mutuallyExclusiveWith.
+4. State in requirements that all edge cases (positive and negative) for mutual exclusion suspension must be encoded and verified with explicit scenario predicates and assertions.
+
+=== USER QUESTIONS ===
+1. Should the system ensure that, whenever Emergency mode is entered with two emAdmins, it is always possible for at least one user to be delegated/assigned two mutually exclusive roles (i.e., treat this as an edge case scenario for model testing)?
+2. Is it intentional that a role can be mutually exclusive with itself in the mutuallyExclusiveWith relation? (User clarified: No, self-exclusion is not allowed.)
+
+=== HANDOFF TO RE ===
+1. Strengthen the Alloy model and/or Scenario_MutualExclusionSuspended_Positive to guarantee realization of an edge case scenario where at least one user holds two mutually exclusive roles during Emergency with two emAdmins; adjust facts, delegation logic, and scopes as needed.
+2. Remove any role self-exclusion in mutuallyExclusiveWith.
+3. Update requirements (R3.2 and related) to demand explicit demonstration (not just possibility) of mutual exclusion suspension during Emergency with exactly two emAdmins as an edge case scenario.
+4. Add or confirm explicit scenario predicates and assertions for all positive and negative edge cases regarding mutual exclusion and Emergency mode entry, with corresponding run/expect commands.
+5. Address the clarified user questions regarding intent around mutual exclusion suspension and role self-exclusion semantics.
+```
+

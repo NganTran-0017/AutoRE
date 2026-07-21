@@ -1,0 +1,55 @@
+=== FEEDBACK ===
+```
+=== NEXT ACTION DECISION ===
+Decision: refine/narrow fix
+Rationale: The root cause is a missing constructive guarantee (fact) that enables the Emergency mutex delegation scenario, as required for assertMutexAllowedDuringEmergency. The previous removal of EnsureEmergencyMutexDelegationReachable caused an unintended regression. The correct action is to restore a narrowly-scoped, constructive fact to guarantee this scenario, but only as needed for the assertion—avoid broad or global overconstraint.
+
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Baseline: Satisfiable
+- Combined Model: Satisfiable
+- Assertions: Counterexamples (assertMutexAllowedDuringEmergency fails)
+- Instances: Meaningful (except for the missing Emergency mutex delegation scenario)
+- Vacuity: None
+
+=== REPAIR INSTRUCTIONS ===
+- Restore a fact (e.g., EnsureEmergencyMutexDelegationReachable) to the model that constructively guarantees: in every valid instance, there exists at least one state in Emergency mode where some user holds both members of a mutex pair (with at least one via delegation and not both via direct assignment).
+- The fact should be narrowly scoped: it should only enforce the reachability/existence of the required scenario, not constrain all transitions, initializations, or the general shape of the trace.
+- Example (insert after the facts block, before the assertions):
+
+fact EnsureEmergencyMutexDelegationReachable {
+  some s: State | 
+    s.mode = Emergency and
+    some u: User, r1, r2: Role |
+      r2 in r1.mutexWith and
+      r1 in s.userRoles[u] and
+      r2 in s.userRoles[u] and
+      (r1 in delegatedRoles[s, u] or r2 in delegatedRoles[s, u]) and
+      not (r1 in directRoles[s, u] and r2 in directRoles[s, u])
+}
+
+- Do NOT repeat global or strong constructive requirements that previously caused unsat runs or blocked liveness.
+- After adding, rerun assertMutexAllowedDuringEmergency and confirm all positive runs still satisfy.
+- If other regressions appear, further narrow the fact (e.g., only require this scenario in some run, not all runs).
+
+=== ASSUMPTIONS REVIEW ===
+None - assumptions appear sound
+
+=== REQUIREMENT UPDATES ===
+None - no requirement updates justified
+
+=== UPDATED USER QUESTIONS ===
+None
+
+=== Q&A STATUS UPDATE ===
+None - no status changes
+
+=== HANDOFF TO RE ===
+Priority 1 (Critical blockers): Restore a narrowly scoped constructive fact (EnsureEmergencyMutexDelegationReachable) to guarantee the Emergency mutex delegation scenario as required by the assertion.
+Priority 2 (Important improvements): Ensure the new fact does not globally overconstrain transitions or block liveness; if necessary, iterate on the scope of the constructive guarantee.
+Priority 3 (Optional enhancements): Review whether scenario predicates (e.g., MutexPossibleDuringEmergency) warrant additional coverage or separate positive runs for future robustness.
+```
+
+=== FINAL CONVERGENCE ===
+False
+

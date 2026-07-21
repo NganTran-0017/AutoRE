@@ -1,0 +1,99 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples (assertMutExRolesCanBeHeldEmergency fails; delegation expiration timing issue)
+- Predicates: Satisfiable (some), Unsatisfiable (ExistsUserWithMutuallyExclusiveRolesInNormal)
+- Instances: Suspicious (trivial/vacuous: no Emergency states, no roles held, mutuallyExclusiveWith empty; delegation expiry before grant observed)
+- Vacuity: Possible (Emergency mode and mutual exclusion not always exercised; clearance constraints and delegation order not enforced)
+- Overall: Incomplete
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+1. Add a fact or scenario predicate to require at least one Emergency mode state in every relevant trace, e.g.,
+   ```
+   fact AtLeastOneEmergency { some s: State | s.mode = Emergency }
+   ```
+   or use a predicate to scope relevant runs.
+2. Add a fact to ensure at least one pair of mutually exclusive roles, but keep abstraction: require that mutuallyExclusiveWith is symmetric and irreflexive (no role is mutually exclusive with itself, and mutual exclusion is bidirectional):
+   ```
+   fact MutExSymmIrreflexive {
+     all r: Role | r not in r.mutuallyExclusiveWith
+     all r1, r2: Role | r1 in r2.mutuallyExclusiveWith iff r2 in r1.mutuallyExclusiveWith
+   }
+   fact MutExRolesExist { some r1, r2: Role | r1 != r2 and r1 in r2.mutuallyExclusiveWith }
+   ```
+3. Strengthen delegation modeling:
+   - Add a fact to ensure delegations are only expired after they are granted; no delegation expires before its creation.
+   - Ensure that to delegate a role, the delegator must currently hold that role, and the delegatee meets the clearance requirement:
+     ```
+     fact DelegationValid {
+       all s: State, u, v: User, r: Role |
+         (delegated[u, v, r, s]) implies
+           (r in rolesHeld[u, s] and clearance[v] >= classification[r])
+     }
+     ```
+     (adapt as per model structure)
+4. Remove redundant predicates that restate facts. Use facts for system invariants; use predicates for scenario constraints. Ensure agents do not duplicate logic between facts and predicates.
+5. For Emergency scenarios, add a predicate requiring:
+   - At least one Emergency state
+   - At least one user holds two mutually exclusive roles in Emergency
+   - All necessary constraints on role assignment and delegation are met
+6. Ensure mutuallyExclusiveWith is populated for at least some roles in test data or via facts for non-vacuous checking.
+7. Model request processing during Emergency by classification:
+   - In Emergency, all high requests are processed concurrently first, then medium, then low.
+   - Add facts or assertions that capture this ordering and concurrency.
+8. Update the modeling of R4.2b to accurately reflect the requirement (see Requirement Updates).
+
+=== ASSUMPTIONS REVIEW ===
+- The model should remain abstract regarding which roles are mutually exclusive (no business constraints), but enforce irreflexivity and symmetry.
+- The model may allow mutuallyExclusiveWith to be empty in general, but not in Emergency verification runs.
+- Emergency mode and mutual exclusion must be enforced in verification scenarios.
+- Delegation must only occur if the delegator holds the role and the delegatee meets the clearance requirement.
+- Delegation expiry must always occur after the delegation is granted.
+- Request processing order in Emergency must be by classification (high → medium → low).
+- No need to model duplicate administrators; uniqueness already enforced.
+
+=== STRONGER CHECKS ===
+1. Add assertions to ensure negative properties:
+   - In Normal mode, no user can hold two mutually exclusive roles (ensure mutuallyExclusiveWith is non-empty in these runs).
+   - Add assertion: No delegation expires before it is granted.
+2. Add assertion: A user holds two mutually exclusive roles in Emergency mode in at least one state (to avoid vacuity).
+3. Add assertion: Delegation is only possible if the delegator holds the role and the delegatee meets the clearance requirement.
+4. Add assertions or temporal properties that, during Emergency, requests are processed in correct classification order (high before medium, medium before low; all of same class can be processed concurrently).
+5. Strengthen predicate/fact separation: facts for invariants, predicates for scenario constraints.
+6. Update or add assertion to check that R4.2b is modeled according to its true requirement, not just an approximation.
+
+=== REQUIREMENT_UPDATES ===
+1. R3.2: Clarify that, for Emergency verification, it must be possible and observable for at least one user to hold two mutually exclusive roles simultaneously, not just permitted in principle.
+2. Add: "In Emergency module verification scenarios, at least one Emergency state and at least one pair of mutually exclusive roles must exist."
+3. Clarify: General operation may allow absence of mutually exclusive roles, but Emergency verification must not be vacuously satisfied.
+4. Add: "Delegation can only occur if the delegator holds the role and the delegatee meets the clearance requirement at the time of delegation. No delegation can expire before it is granted."
+5. Add: "During Emergency, request processing must occur by classification: all high requests are handled first (possibly concurrently), then medium, then low."
+6. Update R4.2b requirement to match its intended specification (see user note) and ensure the Alloy model reflects the actual business rule.
+
+=== USER QUESTIONS ===
+1. Is it acceptable to enforce, only within the Alloy model (not the general requirements), that at least one Emergency state and at least one mutually exclusive role pair exist in each Emergency verification scenario?
+2. Should Emergency verification scenarios explicitly require Emergency mode to be exercised and mutual exclusion to be observable, even if in general operation these are not always present?
+3. To confirm: there are no business or security constraints on which roles can be mutually exclusive, other than mutual exclusion is symmetric, irreflexive, and roles cannot be mutually exclusive with themselves. Is this abstraction level sufficient for now?
+4. For delegation: Should the model enforce that delegations cannot expire before being granted, and that delegators must hold the delegated role and delegatees must meet clearance at delegation time?
+5. Can you confirm the intended behavior for R4.2b so the model can be updated to match the actual requirement?
+
+=== HANDOFF TO RE ===
+1. Update Alloy model:
+   - Enforce Emergency mode and mutual exclusion in verification scenarios via facts/predicates.
+   - Enforce delegation validity: no early expiry, delegator holds role, delegatee meets clearance.
+   - Ensure mutuallyExclusiveWith is symmetric, irreflexive, and populated for non-vacuous checks.
+   - Model Emergency request processing by classification order (high → medium → low; concurrency within class).
+   - Remove redundant predicates/facts; use facts for invariants, predicates for scenario construction.
+   - Correct modeling of R4.2b per requirement.
+2. Update requirements:
+   - Clarify Emergency and mutual exclusion observability in Emergency module verification.
+   - Clarify delegation and request processing constraints.
+   - Distinguish between invariants and scenario-specific constraints in documentation.
+3. Confirm with stakeholders:
+   - Acceptability of enforcing Emergency and mutual exclusion only in Alloy model for verification.
+   - Abstract treatment of mutually exclusive roles.
+   - Intended semantics of R4.2b.
+4. Add/strengthen assertions for negative and positive cases per above.
+```
+

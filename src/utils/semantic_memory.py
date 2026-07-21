@@ -44,9 +44,9 @@ class SemanticMemorySystem:
         # Deduplication configuration
         self.enable_dedup = enable_dedup
         self.dedup_config = dedup_config or {
-            "similarity_threshold": 0.85,
-            "merge_similar_lessons": True,
-            "update_min_length_ratio": 1.1
+            "merge_threshold": 0.7,
+            "drop_threshold": 0.91,
+            "merge_similar_lessons": True
         }
 
         # Initialize MemoryAssistant for merging (lazy loaded)
@@ -77,10 +77,20 @@ class SemanticMemorySystem:
             metadata={"hnsw:space": "cosine"}
         )
 
+        # Project-specific modeling conventions (encoding decisions for THIS
+        # model, e.g. "use one variable for time steps"). Distinct from lessons
+        # (universal Alloy syntax) - kept separate so they can be always-injected
+        # into model building rather than semantically retrieved.
+        self.conventions_collection = self.client.get_or_create_collection(
+            name="conventions",
+            metadata={"hnsw:space": "cosine"}
+        )
+
         self._collection_map = {
             "lesson": self.lessons_collection,
             "pattern": self.patterns_collection,
-            "event": self.events_collection
+            "event": self.events_collection,
+            "convention": self.conventions_collection
         }
 
     @property
@@ -116,7 +126,9 @@ class SemanticMemorySystem:
         if not collection:
             return []
 
-        threshold = self.dedup_config.get("similarity_threshold", 0.85)
+        # Floor at the merge band's lower edge: lessons below this are treated
+        # as genuinely new (not similar enough to merge or drop).
+        threshold = self.dedup_config.get("merge_threshold", 0.7)
 
         try:
             # Query for similar items
@@ -189,6 +201,53 @@ class SemanticMemorySystem:
                 ids=[existing_id]
             )
 
+    def _merge_blocking(
+        self,
+        existing_id: str,
+        existing_content: str,
+        new_content: str,
+        new_iteration: int
+    ):
+        """
+        Run the async lesson merge to completion synchronously.
+
+        The previous implementation fired `asyncio.create_task(...)` and returned
+        without keeping a reference, so the merge was garbage-collected and never
+        persisted (confirmed lessons were silently lost). This blocks until the
+        merge - or its deterministic replace fallback - is written to ChromaDB.
+
+        Args:
+            existing_id: ID of the existing (similar) lesson
+            existing_content: Content of the existing lesson
+            new_content: Content of the new lesson to fold in
+            new_iteration: Iteration number of the new lesson
+        """
+        import asyncio
+        import concurrent.futures
+
+        coro = self._merge_and_update_lesson(
+            existing_id=existing_id,
+            existing_content=existing_content,
+            new_content=new_content,
+            new_iteration=new_iteration
+        )
+        try:
+            try:
+                asyncio.get_running_loop()
+            except RuntimeError:
+                # No event loop running on this thread - run directly.
+                asyncio.run(coro)
+                return
+            # An event loop is already running here (the async workflow): run
+            # the coroutine on a fresh loop in a worker thread and block on it.
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                executor.submit(asyncio.run, coro).result()
+        except Exception as e:
+            # LLM merge failed - fall back to a deterministic replace so the new
+            # lesson content is not lost.
+            print(f"Warning: lesson merge failed ({e}); replacing with new content")
+            self._simple_update_lesson(existing_id, new_content, new_iteration)
+
     def store(
         self,
         content: str,
@@ -211,13 +270,14 @@ class SemanticMemorySystem:
             iteration: Current iteration number
             metadata: Additional arbitrary data
         """
-        import asyncio
-
         collection = self._collection_map.get(item_type)
         if not collection:
             raise ValueError(f"Unknown item_type: {item_type}")
 
-        # Check for semantic duplicates (only for lessons if dedup enabled)
+        # Banded semantic dedup (only for lessons if dedup enabled):
+        #   sim >= drop_threshold        -> drop the new lesson (duplicate)
+        #   merge_threshold <= sim < drop -> merge new with the existing lesson
+        #   sim < merge_threshold        -> save as a new lesson
         if self.enable_dedup and item_type == "lesson":
             similar_items = self._check_semantic_duplicates(
                 content, item_type, agent, action
@@ -225,47 +285,25 @@ class SemanticMemorySystem:
 
             if similar_items:
                 most_similar = similar_items[0]
+                drop_threshold = self.dedup_config.get("drop_threshold", 0.91)
 
-                # Check if new lesson has additional information
-                new_len = len(content.split())
-                existing_len = len(most_similar['content'].split())
-                length_ratio = new_len / existing_len if existing_len > 0 else 1.0
+                if most_similar['similarity'] >= drop_threshold:
+                    # Near-identical to an existing lesson - drop the new one.
+                    return
 
-                min_ratio = self.dedup_config.get("update_min_length_ratio", 1.1)
-                merge_enabled = self.dedup_config.get("merge_similar_lessons", True)
+                if self.dedup_config.get("merge_similar_lessons", True):
+                    # In the merge band - fold the new lesson into the existing
+                    # one, blocking until the merge (or fallback replace) persists.
+                    self._merge_blocking(
+                        existing_id=most_similar['id'],
+                        existing_content=most_similar['content'],
+                        new_content=content,
+                        new_iteration=iteration
+                    )
+                    return
 
-                if merge_enabled and length_ratio > min_ratio:
-                    # New lesson has more info - merge with existing (async)
-                    try:
-                        # Run async merge in event loop
-                        loop = asyncio.get_event_loop()
-                        if loop.is_running():
-                            # We're already in an async context - create task
-                            asyncio.create_task(self._merge_and_update_lesson(
-                                existing_id=most_similar['id'],
-                                existing_content=most_similar['content'],
-                                new_content=content,
-                                new_iteration=iteration
-                            ))
-                        else:
-                            # Run in new event loop
-                            asyncio.run(self._merge_and_update_lesson(
-                                existing_id=most_similar['id'],
-                                existing_content=most_similar['content'],
-                                new_content=content,
-                                new_iteration=iteration
-                            ))
-                    except RuntimeError:
-                        # Fallback: simple update without merging
-                        self._simple_update_lesson(
-                            most_similar['id'],
-                            content,  # Use new content as-is
-                            iteration
-                        )
-                    return  # Updated existing, don't store new
-                else:
-                    # Similar but no new info - reject duplicate
-                    return  # Skip storage
+                # Merge disabled - treat the similar lesson as a duplicate.
+                return
 
         # No duplicate or dedup disabled - store normally
         timestamp = datetime.now().isoformat()
@@ -549,11 +587,63 @@ class SemanticMemorySystem:
             
             return []
 
+    def get_conventions(
+        self,
+        agent: Optional[str] = None,
+        action: Optional[str] = None,
+        limit: int = 50,
+        query: Optional[str] = None
+    ) -> List[str]:
+        """
+        Get modeling conventions. Unlike lessons, conventions are meant to be
+        injected in full every iteration, so callers typically omit `query` and
+        pass a generous `limit` to retrieve all of them.
+
+        Args:
+            agent: Filter by agent (usually omitted - conventions are model-wide)
+            action: Filter by action (usually omitted)
+            limit: Maximum number
+            query: If provided, use semantic search with this query
+
+        Returns:
+            List of convention strings
+        """
+        if query:
+            results = self.retrieve_similar(
+                query=query,
+                item_type="convention",
+                agent=agent,
+                action=action,
+                limit=limit
+            )
+            return [r['content'] for r in results]
+
+        where_filter = None
+        if agent and action:
+            where_filter = {"$and": [{"agent": agent}, {"action": action}]}
+        elif agent:
+            where_filter = {"agent": agent}
+        elif action:
+            where_filter = {"action": action}
+
+        try:
+            results = self.conventions_collection.get(
+                where=where_filter,
+                limit=limit
+            )
+            if results and results['documents']:
+                return results['documents']
+        except Exception as e:
+            print(f"Warning: Error getting conventions: {e}")
+
+        return []
+
     def clear_all(self):
         """Clear all collections."""
         self.client.delete_collection("lessons")
         self.client.delete_collection("patterns")
         self.client.delete_collection("events")
+        self.client.delete_collection("conventions")
 
         # Recreate collections
         self.__init__(self.project_name)
@@ -567,13 +657,15 @@ class SemanticMemorySystem:
         lesson_count = self.lessons_collection.count()
         pattern_count = self.patterns_collection.count()
         event_count = self.events_collection.count()
+        convention_count = self.conventions_collection.count()
 
         return {
-            "total": lesson_count + pattern_count + event_count,
+            "total": lesson_count + pattern_count + event_count + convention_count,
             "by_type": {
                 "lesson": lesson_count,
                 "pattern": pattern_count,
-                "event": event_count
+                "event": event_count,
+                "convention": convention_count
             }
         }
 

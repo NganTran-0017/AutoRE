@@ -17,8 +17,9 @@ async def main():
     parser.add_argument("input_file", nargs="?", help="Input requirements file")
     parser.add_argument("--max-iterations", type=int, default=10,
                        help="Maximum refinement iterations (or additional iterations in resume mode)")
-    parser.add_argument("--timeout", type=int, default=300,
-                       help="User input timeout in seconds (default: 300)")
+    parser.add_argument("--timeout", type=int, default=None,
+                       help="User input timeout in seconds (default: config.yaml's "
+                            "user_interaction.response_timeout, or 300 if unset)")
     parser.add_argument("--project", default="default",
                        help="Project name for memory isolation")
     parser.add_argument("--resume", action="store_true",

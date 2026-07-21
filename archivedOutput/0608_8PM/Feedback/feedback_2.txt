@@ -1,0 +1,127 @@
+=== FEEDBACK ===
+## 1. NEXT ACTION DECISION
+
+**Primary Action:**  
+refine/narrow fix
+
+**Rationale:**  
+The fix direction (explicit clearance ordering) was correct for the clearance comparison, but the core regression—assertion failures regarding EmergencyPrivilege and delegation handling—stems from missing global enforcement of key constraints. The predicates (R3, R4) embody requirements only within their local context, so the assertions (which check global model behavior) are not enforced. The model needs these constraints as global facts, not just as predicates.
+
+---
+
+## 2. CONCRETE MODEL-IMPROVEMENT GUIDANCE
+
+**A. Add global facts to enforce EmergencyPrivilege and delegation behavior:**  
+Move or duplicate the core enforcement logic from the requirement predicates into global facts. Specifically:
+
+### i. EmergencyPrivilege must only be present during Emergency mode
+
+Add this global fact (code snippet):
+
+```alloy
+fact EmergencyPrivsOnlyDuringEmergency {
+  all s: State | all a: Administrator | 
+    some s.emergencyPrivs[a] implies s.mode = Emergency
+}
+```
+
+### ii. EmergencyPrivilege is always revoked at Emergency exit
+
+Add this global fact:
+
+```alloy
+fact EmergencyPrivsRevokedAtExit {
+  all s, s2: State | 
+    s.mode = Emergency and s2.mode = Normal and Next[s, s2] =>
+      all a: Administrator | no s2.emergencyPrivs[a]
+}
+```
+
+### iii. Delegation revocation and retention at Emergency exit
+
+Add these global facts:
+
+```alloy
+// Delegations assigned during Emergency are revoked at Emergency exit
+fact DelegationRevokedAtEmergencyExit {
+  all s, s2: State |
+    s.mode = Emergency and s2.mode = Normal and Next[s, s2] =>
+      all d: Delegation |
+        d.duringEmergency = True => d not in s2.activeDelegations
+}
+
+// Delegations assigned before Emergency persist after Emergency
+fact DelegationRetainedAfterEmergencyIfNotDuring {
+  all s, s2: State |
+    s.mode = Emergency and s2.mode = Normal and Next[s, s2] =>
+      all d: Delegation |
+        d.duringEmergency = False => (d in s2.activeDelegations iff d in s.activeDelegations)
+}
+```
+
+**B. Remove or simplify redundant logic in requirement predicates if fully enforced globally.**  
+Once these constraints exist as facts, the relevant logic in the R3 and R4 predicates may be redundant. Either remove those lines or ensure they do not conflict. Maintain the predicates for documentation or incremental verification, but avoid duplicating constraints across facts and predicates.
+
+**C. Regression stability requirement:**  
+In the next revision, all assertion behaviors (especially those unrelated to EmergencyPrivilege and delegation) must remain stable. Do not weaken or interfere with core RBAC safety and liveness properties.
+
+---
+
+## 3. ASSUMPTION REVIEW
+
+No assumption-level risks detected in the current result. No action required.
+
+---
+
+## 4. REQUIREMENT UPDATES
+
+No changes needed. The requirements are clear and consistent regarding EmergencyPrivilege and delegation handling.
+
+---
+
+## 5. Q&A REUSE AND UPDATE
+
+No prior Q&A or unresolved interpretation questions relevant at this stage.
+
+---
+
+## 6. STRONGER VERIFICATION CHECKS
+
+Do not add new checks until all assertions pass. Once the model is assertion-clean, recommend adding:
+- Negative cases (e.g., EmergencyPrivilege never present in Normal mode for any administrator)
+- Edge cases (e.g., transitions at Emergency mode boundaries)
+- Vacuity checks (e.g., no state exists where EmergencyPrivilege is granted outside Emergency mode)
+
+---
+
+## 7. PRIORITIZED HANDOFF ITEMS
+
+**Critical (fix now):**
+- Add the global facts for EmergencyPrivilege and delegation handling as shown above.
+- Rerun all assertions and regression checks.
+
+**Important (follow-up):**
+- Remove or refactor redundant logic in requirement predicates to avoid inconsistency as global facts now govern enforcement.
+- Confirm that all existing RBAC safety/liveness assertions remain unaffected.
+
+**Optional (future enhancement):**
+- Once the above passes, introduce stronger/exhaustive verification scenarios (negative cases, edge cases, vacuity checks).
+
+---
+
+**Summary Table**
+
+| Priority   | Action                                                                                           |
+|------------|--------------------------------------------------------------------------------------------------|
+| Critical   | Add global facts for EmergencyPrivilege and delegation revocation/retention.                     |
+| Important  | Refactor requirement predicates to avoid redundant/contradictory constraints.                    |
+| Optional   | Add negative/edge/vacuity verification checks after all assertions pass.                         |
+
+---
+
+**Next Step:**  
+Implement the specified global facts enforcing EmergencyPrivilege and delegation revocation/retention, rerun all assertions, and confirm that no new regressions are introduced.
+
+=== FINAL CONVERGENCE ===
+False
+

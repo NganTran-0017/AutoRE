@@ -1,0 +1,1648 @@
+//UNUSED code — Dead-code inventory for AutoRE, generated 2026-07-06
+//
+// Verification method: AST scan of all definitions in src/ + main.py, cross-checked
+// with word-boundary reference search across runtime code (src/, main.py), all tests
+// (test/, root test_*.py), scripts/ and tools/, plus a string/getattr dynamic-reference
+// check and an import-reachability walk from main.py. Every item below has ZERO
+// references outside its own definition.
+//
+// NOTE: nothing has been deleted from the codebase; this file is an inventory only.
+// Related stale artifacts if these are ever removed: test/test_agents.py (imports
+// src/agents), and the UserInteraction / alloy_formatter imports in src/utils/__init__.py.
+
+// Totals: 942 lines across 6 dead modules + 536 lines across 30 dead functions/methods.
+====================================================================================================
+PART 1: ENTIRE MODULES UNREACHABLE FROM main.py
+====================================================================================================
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — entire module: src/utils/prompt_parser.py (224 lines)
+// Reason: never imported by any runtime module or test
+////////////////////////////////////////////////////////////////////////////////////////////////////
+"""Utility for parsing and extracting sections from prompt files."""
+import re
+from typing import Dict, Optional, List
+
+
+def extract_prompt_sections(prompt_text: str) -> Dict[str, str]:
+    """
+    Extract sections and subsections from a structured prompt file.
+
+    Sections are identified by:
+    - ### SECTION NAME: for main sections
+    - ## SUBSECTION or ##N. SUBSECTION for subsections
+
+    Args:
+        prompt_text: Full prompt text from file
+
+    Returns:
+        Dictionary mapping section names to their content
+        Subsections are stored as "PARENT_SECTION.SUBSECTION_NAME"
+    """
+    sections = {}
+
+    # Patterns to match headers
+    section_pattern = r'^###\s+([A-Z][A-Z\s_]+):\s*$'  # ### SECTION:
+    subsection_pattern = r'^##\s*(\d+\.\s+)?([A-Z][A-Z\s_]+)\s*$'  # ##1. SUBSECTION or ## SUBSECTION
+
+    lines = prompt_text.split('\n')
+    current_section = None
+    current_subsection = None
+    current_content = []
+
+    for line in lines:
+        # Check for main section header (### SECTION:)
+        section_match = re.match(section_pattern, line.strip())
+        if section_match:
+            # Save previous content
+            if current_subsection:
+                key = f"{current_section}.{current_subsection}"
+                sections[key] = '\n'.join(current_content).strip()
+            elif current_section:
+                sections[current_section] = '\n'.join(current_content).strip()
+
+            # Start new section
+            current_section = section_match.group(1).strip()
+            current_subsection = None
+            current_content = []
+            continue
+
+        # Check for subsection header (##1. SUBSECTION or ## SUBSECTION)
+        subsection_match = re.match(subsection_pattern, line.strip())
+        if subsection_match and current_section:
+            # Save previous subsection if exists
+            if current_subsection:
+                key = f"{current_section}.{current_subsection}"
+                sections[key] = '\n'.join(current_content).strip()
+            elif current_content:
+                # Save section content before first subsection
+                sections[current_section] = '\n'.join(current_content).strip()
+
+            # Start new subsection (remove number prefix if present)
+            subsection_name = subsection_match.group(2).strip()
+            current_subsection = subsection_name
+            current_content = []
+            continue
+
+        # Add line to current content
+        if current_section:
+            current_content.append(line)
+
+    # Save the last section/subsection
+    if current_subsection:
+        key = f"{current_section}.{current_subsection}"
+        sections[key] = '\n'.join(current_content).strip()
+    elif current_section:
+        sections[current_section] = '\n'.join(current_content).strip()
+
+    return sections
+
+
+def get_section(sections: Dict[str, str], section_name: str, default: str = "") -> str:
+    """
+    Get a specific section from extracted sections.
+
+    Args:
+        sections: Dictionary of sections
+        section_name: Name of section to retrieve
+        default: Default value if section not found
+
+    Returns:
+        Section content or default
+    """
+    return sections.get(section_name, default)
+
+
+def get_subsection(sections: Dict[str, str], parent_section: str, subsection_name: str, default: str = "") -> str:
+    """
+    Get a specific subsection from extracted sections.
+
+    Args:
+        sections: Dictionary of sections
+        parent_section: Name of parent section (e.g., "CORE RESPONSIBILITIES")
+        subsection_name: Name of subsection (e.g., "REQUIREMENT ANALYSIS")
+        default: Default value if subsection not found
+
+    Returns:
+        Subsection content or default
+    """
+    key = f"{parent_section}.{subsection_name}"
+    return sections.get(key, default)
+
+
+def get_all_subsections(sections: Dict[str, str], parent_section: str) -> Dict[str, str]:
+    """
+    Get all subsections under a parent section.
+
+    Args:
+        sections: Dictionary of sections
+        parent_section: Name of parent section
+
+    Returns:
+        Dictionary mapping subsection names to their content
+    """
+    subsections = {}
+    prefix = f"{parent_section}."
+    
+    for key, value in sections.items():
+        if key.startswith(prefix):
+            subsection_name = key[len(prefix):]
+            subsections[subsection_name] = value
+    
+    return subsections
+
+
+def extract_workflow_steps(sections: Dict[str, str], workflow_section: str = "WORKFLOW") -> Dict[str, str]:
+    """
+    Extract workflow steps from the WORKFLOW section.
+    
+    Parses steps like:
+    1. Step Name: description
+    2. Another Step: description
+    
+    Args:
+        sections: Dictionary of sections
+        workflow_section: Name of workflow section
+        
+    Returns:
+        Dictionary mapping step numbers/names to content
+    """
+    workflow = sections.get(workflow_section, "")
+    if not workflow:
+        return {}
+    
+    steps = {}
+    # Pattern: 1. Step Name: content (until next step or end)
+    pattern = r'(\d+)\.\s+([^:]+):(.*?)(?=\d+\.|$)'
+    
+    for match in re.finditer(pattern, workflow, re.DOTALL):
+        step_num = match.group(1)
+        step_name = match.group(2).strip()
+        step_content = match.group(3).strip()
+        
+        # Store with both number and name as key
+        key = f"{step_num}. {step_name}"
+        steps[key] = step_content
+        steps[step_num] = step_content  # Also store by number only
+    
+    return steps
+
+
+def combine_sections(sections: Dict[str, str], section_names: list) -> str:
+    """
+    Combine multiple sections into a single prompt.
+
+    Args:
+        sections: Dictionary of sections
+        section_names: List of section names to combine
+
+    Returns:
+        Combined prompt text
+    """
+    parts = []
+    for name in section_names:
+        if name in sections:
+            parts.append(f"{name}:")
+            parts.append(sections[name])
+            parts.append("")  # Blank line between sections
+
+    return '\n'.join(parts).strip()
+
+
+def extract_workflow_step(sections: Dict[str, str], step_identifier: str, workflow_type: str = "INTERACTION WORKFLOW") -> Optional[str]:
+    """
+    Extract a specific workflow step from the workflow section.
+
+    Args:
+        sections: Dictionary of sections
+        step_identifier: Step identifier (e.g., "Step 1", "Step 2", "STEP 3")
+        workflow_type: Type of workflow section to search (e.g., "INTERACTION WORKFLOW" or "VERIFICATION WORKFLOW")
+
+    Returns:
+        Step instructions or None if not found
+    """
+    workflow = sections.get(workflow_type, "")
+
+    if not workflow:
+        return None
+
+    # Pattern to match a step section
+    # Matches "Step X:" or "STEP X:" (case-insensitive) through to the next "Step" or end
+    # Normalize step_identifier to handle both "Step 1" and "STEP 1"
+    step_num = re.search(r'\d+', step_identifier)
+    if not step_num:
+        return None
+
+    num = step_num.group(0)
+
+    # Pattern that matches both "Step N:" and "STEP N:" (with optional space before colon)
+    pattern = rf'(?:Step|STEP)\s*{num}\s*:.*?(?=(?:Step|STEP)\s*\d+\s*:|$)'
+
+    match = re.search(pattern, workflow, re.DOTALL | re.IGNORECASE)
+    if match:
+        return match.group(0).strip()
+
+    return None
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — entire module: src/utils/user_interaction.py (279 lines)
+// Reason: superseded by CLIInteraction; only loaded via stale src/utils/__init__.py import, class never instantiated
+////////////////////////////////////////////////////////////////////////////////////////////////////
+"""
+User interaction utilities for file-based communication.
+
+LEGACY CODE - UNUSED IN CURRENT VERSION
+
+This module contains the old UserInteraction class that has been
+replaced by CLIInteraction for CLI-based user interaction.
+
+Status: Not instantiated anywhere in current codebase
+Kept for: Backward compatibility / potential future GUI implementation
+Consider: Mark as deprecated or remove in future refactoring
+
+For current CLI interaction, see: cli_interaction.py
+"""
+from pathlib import Path
+from typing import Optional
+import time
+
+
+class UserInteraction:
+    """
+    DEPRECATED: Use CLIInteraction instead.
+
+    Manages file-based user interaction.
+
+    This class is kept for backward compatibility but is not used
+    in the current CLI-based workflow.
+    """
+
+    def __init__(self, base_dir: str = "."):
+        """
+        Initialize user interaction manager.
+
+        Args:
+            base_dir: Base directory for interaction files
+        """
+        self.base_dir = Path(base_dir)
+        self.prompt_file = self.base_dir / "user_prompt.txt"
+        self.feedback_file = self.base_dir / "user_feedback.txt"
+        self.archived_feedback = self.base_dir / "archived_user_feedback.txt"
+
+    def request_user_input(self, prompt: str, wait_for_response: bool = False,
+                          timeout: int = 300) -> Optional[str]:
+        """
+        Request input from user via file.
+
+        Args:
+            prompt: Prompt text to show user
+            wait_for_response: Whether to wait for user response
+            timeout: Timeout in seconds (default: 300 = 5 minutes)
+
+        Returns:
+            User response if wait_for_response is True, else None
+        """
+        # Write prompt
+        with open(self.prompt_file, 'w') as f:
+            f.write(prompt)
+
+        print(f"\n{'='*70}")
+        print("USER INPUT REQUESTED")
+        print(f"{'='*70}")
+        print(f"A prompt has been written to: {self.prompt_file}")
+        print(f"Please review the prompt and provide your response in: {self.feedback_file}")
+        print(f"{'='*70}\n")
+
+        if not wait_for_response:
+            return None
+
+        # Wait for feedback
+        return self._wait_for_feedback(timeout)
+
+    def _wait_for_feedback(self, timeout: int = 300) -> Optional[str]:
+        """
+        Wait for user feedback file to be created.
+
+        Args:
+            timeout: Timeout in seconds (default: 300 = 5 minutes)
+
+        Returns:
+            User feedback content or None if timeout
+        """
+        start_time = time.time()
+        start_timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        print(f"Waiting for user feedback...")
+        print(f"Wait started at: {start_timestamp}")
+        print(f"Timeout: {timeout} seconds ({timeout//60} minutes)")
+        print(f"Checking for feedback file: {self.feedback_file}")
+        print()
+
+        last_update = start_time
+        while True:
+            current_time = time.time()
+            elapsed = current_time - start_time
+
+            # Print periodic updates every 30 seconds
+            if current_time - last_update >= 30:
+                remaining = timeout - elapsed
+                print(f"Still waiting... {int(remaining)} seconds remaining ({int(remaining//60)} min {int(remaining%60)} sec)")
+                last_update = current_time
+
+            if self.feedback_file.exists():
+                # Give a moment for file writing to complete
+                time.sleep(0.5)
+
+                with open(self.feedback_file, 'r') as f:
+                    content = f.read().strip()
+
+                if content:
+                    # Archive the feedback
+                    self._archive_feedback(content)
+                    # Remove the feedback file
+                    self.feedback_file.unlink()
+                    end_timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                    print(f"\n{'='*70}")
+                    print(f"User feedback received at: {end_timestamp}")
+                    print(f"{'='*70}\n")
+                    return content
+
+            # Check timeout
+            if timeout > 0 and elapsed > timeout:
+                end_timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                print(f"\n{'='*70}")
+                print(f"WAIT TIME EXPIRED")
+                print(f"{'='*70}")
+                print(f"Wait ended at: {end_timestamp}")
+                print(f"No user feedback received within {timeout} seconds ({timeout//60} minutes)")
+                print(f"Proceeding with assumption: No feedback from user")
+                print(f"{'='*70}\n")
+                return None
+
+            time.sleep(2)  # Check every 2 seconds
+
+    def _archive_feedback(self, content: str):
+        """
+        Archive user feedback.
+
+        Args:
+            content: Feedback content
+        """
+        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+        with open(self.archived_feedback, 'a') as f:
+            f.write(f"\n{'='*70}\n")
+            f.write(f"Feedback at {timestamp}\n")
+            f.write(f"{'='*70}\n")
+            f.write(content)
+            f.write(f"\n{'='*70}\n\n")
+
+    def has_pending_feedback(self) -> bool:
+        """
+        Check if there is pending user feedback.
+
+        Returns:
+            True if feedback file exists and has content
+        """
+        if not self.feedback_file.exists():
+            return False
+
+        with open(self.feedback_file, 'r') as f:
+            return bool(f.read().strip())
+
+    def get_pending_feedback(self) -> Optional[str]:
+        """
+        Get pending feedback without waiting.
+
+        Returns:
+            Feedback content or None
+        """
+        if not self.has_pending_feedback():
+            return None
+
+        with open(self.feedback_file, 'r') as f:
+            content = f.read().strip()
+
+        if content:
+            self._archive_feedback(content)
+            self.feedback_file.unlink()
+            return content
+
+        return None
+
+    def clear_prompt(self):
+        """Clear the prompt file."""
+        if self.prompt_file.exists():
+            self.prompt_file.unlink()
+
+    def create_clarification_request(self, iteration: int, assumptions: str,
+                                    requirements_summary: str) -> str:
+        """
+        Create a clarification request prompt.
+
+        Args:
+            iteration: Current iteration number
+            assumptions: Assumptions requiring clarification
+            requirements_summary: Summary of requirements
+
+        Returns:
+            Prompt text
+        """
+        prompt = f"""
+{'='*70}
+CLARIFICATION REQUEST - Iteration {iteration}
+{'='*70}
+
+REQUIREMENTS SUMMARY:
+{requirements_summary}
+
+ASSUMPTIONS REQUIRING CLARIFICATION:
+{assumptions}
+
+INSTRUCTIONS:
+Please review the above assumptions and provide clarification for each point.
+Your feedback will help refine the requirements and create a more accurate model.
+
+Provide your clarification in the file: {self.feedback_file}
+
+You may also:
+- Confirm assumptions that are correct
+- Correct any misunderstandings
+- Provide additional context or constraints
+
+Format your response as clear, structured text.
+{'='*70}
+"""
+        return prompt
+
+    def create_evaluation_request(self, iteration: int, interpretation: str,
+                                 feedback: dict, current_state: str) -> str:
+        """
+        Create an evaluation feedback request.
+
+        Args:
+            iteration: Current iteration
+            interpretation: Result interpretation
+            feedback: Generated feedback
+            current_state: Current state summary
+
+        Returns:
+            Prompt text
+        """
+        prompt = f"""
+{'='*70}
+EVALUATION REVIEW - Iteration {iteration}
+{'='*70}
+
+CURRENT STATE:
+{current_state}
+
+ANALYZER INTERPRETATION:
+{interpretation}
+
+SUGGESTED IMPROVEMENTS:
+
+Alloy Model:
+{feedback.get('alloy_improvements', 'None')}
+
+Requirements:
+{feedback.get('requirement_updates', 'None')}
+
+Additional Assumptions:
+{feedback.get('assumptions', 'None')}
+
+INSTRUCTIONS:
+Please review the analysis and provide:
+1. Your feedback on the suggested improvements
+2. Any additional scenarios you want to check
+3. Whether you're satisfied with the current state
+
+Provide your response in the file: {self.feedback_file}
+
+If you provide additional scenarios, format them clearly with:
+- Scenario name/description
+- What should be checked
+- Expected behavior
+
+If no additional scenarios and you're satisfied, simply respond: "SATISFIED"
+{'='*70}
+"""
+        return prompt
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — entire module: src/utils/alloy_formatter.py (348 lines)
+// Reason: exports build_priority_context/format_context_for_prompt/count_tokens never called anywhere; only loaded via stale src/utils/__init__.py import
+////////////////////////////////////////////////////////////////////////////////////////////////////
+"""
+Utility for formatting Alloy Analyzer results for LLM consumption.
+
+Implements priority-based context building:
+1. Syntax errors (highest priority) - no instance data
+2. UNSAT predicates - full model analysis
+3. Counterexamples - first complete + other names
+4. Satisfying instances - most comprehensive (All_Requirements)
+"""
+import json
+from typing import Dict, Any, List, Optional
+
+
+def find_most_comprehensive_instance(instances: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    """
+    Find the most comprehensive satisfying instance.
+
+    Priority:
+    1. Command name = "All_Requirements"
+    2. Command name starts with longest "R" chain (e.g., R1R2R3 > R1R2 > R1)
+    3. Command name = "baseline" (existing system verification)
+    4. Last instance
+
+    Args:
+        instances: List of instance dictionaries with 'command_name' and 'data'
+
+    Returns:
+        Most comprehensive instance or None if list is empty
+    """
+    if not instances:
+        return None
+
+    # Priority 1: Look for "All_Requirements"
+    for inst in instances:
+        if inst['command_name'] == 'All_Requirements':
+            return inst
+
+    # Priority 2: Find longest R-chain (R1R2R3 > R1R2 > R1)
+    r_chain_instances = []
+    for inst in instances:
+        cmd_name = inst['command_name']
+        # Count consecutive R digits (R1, R1R2, R1R2R3, etc.)
+        if cmd_name.startswith('R') and any(c.isdigit() for c in cmd_name):
+            # Count how many R-number pairs
+            r_count = cmd_name.count('R')
+            r_chain_instances.append((r_count, inst))
+
+    if r_chain_instances:
+        # Sort by R-count descending, return highest
+        r_chain_instances.sort(key=lambda x: x[0], reverse=True)
+        return r_chain_instances[0][1]
+
+    # Priority 3: Look for "baseline" (existing system)
+    for inst in instances:
+        if inst['command_name'] == 'baseline':
+            return inst
+
+    return None
+
+
+def build_priority_context(
+    execution_result: Dict[str, Any],
+    requirements: str,
+    alloy_model: str
+) -> Dict[str, Any]:
+    """
+    Build evaluation context based on priority.
+
+    Priority order:
+    1. Syntax errors → Skip counterexample/instance data
+    2. UNSAT predicates → Include UNSAT command info
+    3. Counterexamples → Include first complete + other assertion names
+    4. Satisfying instances → Include most comprehensive (All_Requirements)
+
+    Args:
+        execution_result: Results from AlloyExecutor
+        requirements: Requirements document
+        alloy_model: Alloy model content
+
+    Returns:
+        Dictionary with priority-based context for LLM
+    """
+    analysis = execution_result.get('analysis', {})
+
+    context = {
+        'requirements': requirements,
+        'alloy_model': alloy_model,
+        'has_syntax_errors': analysis.get('has_syntax_errors', False),
+        'has_counterexamples': analysis.get('has_counterexamples', False),
+        'has_satisfying_instances': analysis.get('has_satisfying_instances', False),
+        'has_unsat_runs': len(analysis.get('unsat_run_commands', [])) > 0,
+        'has_passing_assertions': len(analysis.get('unsat_check_commands', [])) > 0,
+        # Ratios for summary
+        'num_syntax_errors': len(analysis.get('syntax_errors', [])),
+        'num_counterexamples': len(analysis.get('counterexamples', [])),
+        'num_instances': len(analysis.get('instances', [])),
+        'num_unsat_runs': len(analysis.get('unsat_run_commands', [])),
+        'num_passing_assertions': len(analysis.get('unsat_check_commands', [])),
+        'total_run_commands': analysis.get('total_run_commands', 0),
+        'total_check_commands': analysis.get('total_check_commands', 0)
+    }
+
+    # Priority 1: Syntax Errors (HIGHEST)
+    if context['has_syntax_errors']:
+        context['priority'] = 'syntax_errors'
+        context['syntax_errors'] = analysis.get('syntax_errors', [])
+        # DO NOT include counterexamples or instances
+        context['include_counterexamples'] = False
+        context['include_instances'] = False
+        return context
+
+    # Priority 2: UNSAT Run Commands (Overconstraint)
+    if context['has_unsat_runs']:
+        context['priority'] = 'unsat_runs'
+        context['unsat_run_commands'] = analysis.get('unsat_run_commands', [])
+        context['include_counterexamples'] = False
+        context['include_instances'] = False
+        return context
+
+    # Priority 3: Counterexamples
+    if context['has_counterexamples']:
+        context['priority'] = 'counterexamples'
+        counterexamples = analysis.get('counterexamples', [])
+
+        # Include first complete counterexample (as JSON)
+        if counterexamples:
+            context['first_counterexample'] = {
+                'assertion_name': counterexamples[0]['command_name'],
+                'file': counterexamples[0]['file'],
+                'data': counterexamples[0]['data']  # Keep as JSON
+            }
+
+            # Include names of other failed assertions
+            if len(counterexamples) > 1:
+                context['other_failed_assertions'] = [
+                    ce['command_name'] for ce in counterexamples[1:]
+                ]
+
+        context['include_counterexamples'] = True
+        context['include_instances'] = False
+        return context
+
+    # Priority 4: Satisfying Instances (LOWEST)
+    if context['has_satisfying_instances']:
+        context['priority'] = 'satisfying_instances'
+        instances = analysis.get('instances', [])
+
+        # Find most comprehensive instance (All_Requirements)
+        most_comprehensive = find_most_comprehensive_instance(instances)
+
+        if most_comprehensive:
+            context['comprehensive_instance'] = {
+                'command_name': most_comprehensive['command_name'],
+                'file': most_comprehensive['file'],
+                'data': most_comprehensive['data']  # Keep as JSON
+            }
+
+            # Include names of other instance commands
+            other_instances = [
+                inst['command_name'] for inst in instances
+                if inst['command_name'] != most_comprehensive['command_name']
+            ]
+            if other_instances:
+                context['other_instance_commands'] = other_instances
+
+        context['include_counterexamples'] = False
+        context['include_instances'] = True
+        return context
+
+    # No issues found - just requirements and model
+    context['priority'] = 'no_issues'
+    context['include_counterexamples'] = False
+    context['include_instances'] = False
+    return context
+
+
+def format_context_for_prompt(context: Dict[str, Any]) -> str:
+    """
+    Format priority context into text for LLM prompt.
+
+    Args:
+        context: Context dictionary from build_priority_context()
+
+    Returns:
+        Formatted text for inclusion in LLM prompt
+    """
+    lines = []
+
+    # Always include summary with ratios
+    lines.extend([
+        "ANALYSIS CONTEXT:",
+        f"Priority: {context['priority'].upper().replace('_', ' ')}",
+        ""
+    ])
+    
+    # Primary issue summary (based on priority)
+    if context['priority'] == 'syntax_errors':
+        lines.append(f"PRIMARY ISSUE: {context['num_syntax_errors']} Syntax Error(s)")
+    elif context['priority'] == 'unsat_runs':
+        lines.append(f"PRIMARY ISSUE: {context['num_unsat_runs']}/{context['total_run_commands']} Run Commands UNSAT (Overconstraint)")
+    elif context['priority'] == 'counterexamples':
+        lines.append(f"PRIMARY ISSUE: {context['num_counterexamples']}/{context['total_check_commands']} Assertion(s) Failed (Counterexamples)")
+    elif context['priority'] == 'satisfying_instances':
+        lines.append(f"PRIMARY ISSUE: Validating {context['num_instances']}/{context['total_run_commands']} Satisfying Instance(s)")
+    else:
+        lines.append("PRIMARY ISSUE: None (All checks passed)")
+    
+    lines.append("")
+    
+    # Secondary issues summary (always show)
+    lines.append("SECONDARY ISSUES:")
+    lines.append(f"- Syntax Errors: {context['num_syntax_errors']}")
+    lines.append(f"- Overconstraint (run UNSAT): {context['num_unsat_runs']}/{context['total_run_commands']}")
+    lines.append(f"- Failed Assertions (counterexamples): {context['num_counterexamples']}/{context['total_check_commands']}")
+    lines.append(f"- Passing Assertions (check UNSAT): {context['num_passing_assertions']}/{context['total_check_commands']}")
+    lines.append(f"- Satisfying Instances (run SAT): {context['num_instances']}/{context['total_run_commands']}")
+    lines.append("")
+
+    # Priority 1: Syntax Errors
+    if context['priority'] == 'syntax_errors':
+        lines.append("SYNTAX ERRORS (MUST FIX FIRST!):")
+        lines.append("")
+        for i, err in enumerate(context['syntax_errors'], 1):
+            if isinstance(err, dict):
+                lines.append(f"{i}. Line {err.get('line', '?')}, Column {err.get('column', '?')}")
+                if err.get('message'):
+                    lines.append(f"   {err['message']}")
+                if err.get('context'):
+                    lines.append(f"   Context: {err['context']}")
+            else:
+                lines.append(f"{i}. {str(err)}")
+        lines.append("")
+        lines.append("NOTE: Counterexamples and instances not shown - fix syntax errors first.")
+        lines.append("")
+
+    # Priority 2: UNSAT Run Commands (Overconstraint)
+    elif context['priority'] == 'unsat_runs':
+        lines.append("OVERCONSTRAINT DETECTED (run commands cannot find instances):")
+        lines.append("")
+        for cmd in context['unsat_run_commands']:
+            lines.append(f"- {cmd['type']} {cmd['name']} (command #{cmd['number']})")
+        lines.append("")
+        lines.append("TASK: Analyze the Alloy model to identify over-constraints.")
+        lines.append("These predicates cannot produce any valid instances - the model is too restrictive.")
+        lines.append("")
+
+    # Priority 3: Counterexamples
+    elif context['priority'] == 'counterexamples':
+        lines.append("COUNTEREXAMPLE ANALYSIS:")
+        lines.append("")
+
+        if 'first_counterexample' in context:
+            ce = context['first_counterexample']
+            lines.append(f"Failed Assertion: {ce['assertion_name']}")
+            lines.append(f"File: {ce['file']}")
+            lines.append("")
+            lines.append("Counterexample Instance (JSON):")
+            lines.append(json.dumps(ce['data'], indent=2))
+            lines.append("")
+
+        if 'other_failed_assertions' in context:
+            lines.append("Other Failed Assertions:")
+            for name in context['other_failed_assertions']:
+                lines.append(f"- {name}")
+            lines.append("")
+
+        lines.append("TASK: Analyze why this counterexample violates the assertion.")
+        lines.append("Describe the scenario, why it's wrong, and how to fix the model.")
+        lines.append("")
+
+    # Priority 4: Satisfying Instances
+    elif context['priority'] == 'satisfying_instances':
+        lines.append("SATISFYING INSTANCE ANALYSIS:")
+        lines.append("")
+
+        if 'comprehensive_instance' in context:
+            inst = context['comprehensive_instance']
+            lines.append(f"Most Comprehensive Instance: {inst['command_name']}")
+            lines.append(f"File: {inst['file']}")
+            lines.append("")
+            lines.append("Instance Data (JSON):")
+            lines.append(json.dumps(inst['data'], indent=2))
+            lines.append("")
+
+        if 'other_instance_commands' in context:
+            lines.append("Other Instance Commands (incremental verification):")
+            for name in context['other_instance_commands']:
+                lines.append(f"- {name}")
+            lines.append("")
+
+        lines.append("TASK: Check if this instance reflects intended behavior.")
+        lines.append("Look for:")
+        lines.append("- Trivial/degenerate cases")
+        lines.append("- Missing scenarios")
+        lines.append("- Vacuity (assertions passing for wrong reasons)")
+        lines.append("- Underspecification (model allows invalid states)")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
+def count_tokens(text: str, model: str = "gpt-4") -> int:
+    """
+    Count actual tokens in text using tiktoken.
+    
+    Falls back to approximation if tiktoken not available.
+
+    Args:
+        text: Text to count tokens for
+        model: Model name (for tiktoken encoding)
+
+    Returns:
+        Token count
+    """
+    try:
+        import tiktoken
+        
+        # Get encoding for model
+        try:
+            encoding = tiktoken.encoding_for_model(model)
+        except KeyError:
+            # Fallback to cl100k_base for GPT-4 and newer models
+            encoding = tiktoken.get_encoding("cl100k_base")
+        
+        return len(encoding.encode(text))
+    
+    except ImportError:
+        # Fallback: Use better approximation
+        # GPT-4 tokenizer: ~1 token per 4 characters on average
+        # But this varies significantly by content type
+        
+        # More accurate heuristic:
+        # - Average English word: ~1.3 tokens
+        # - Code/JSON: ~1 token per 3-4 characters
+        # - Whitespace is usually separate tokens
+        
+        # Simple approximation: count words and characters
+        words = len(text.split())
+        chars = len(text)
+        
+        # Weighted estimate:
+        # - Word-based: words * 1.3
+        # - Char-based: chars / 4
+        # Take average of both
+        word_estimate = words * 1.3
+        char_estimate = chars / 4
+        
+        return int((word_estimate + char_estimate) / 2)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — entire module: src/agents/__init__.py (5 lines)
+// Reason: v2 workflow calls actions directly (no Role agents); package only imported by stale test/test_agents.py
+////////////////////////////////////////////////////////////////////////////////////////////////////
+"""AutoRE agents (V2 - with SharedRuntimeContext)."""
+from .requirement_engineer import RequirementEngineerRole
+from .evaluator import EvaluatorRole
+
+__all__ = ['RequirementEngineerRole', 'EvaluatorRole']
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — entire module: src/agents/evaluator.py (45 lines)
+// Reason: v2 workflow calls actions directly; only referenced by stale test/test_agents.py
+////////////////////////////////////////////////////////////////////////////////////////////////////
+"""
+Evaluator agent (v2 - uses SharedRuntimeContext).
+
+Standard MetaGPT Role with context-aware actions.
+"""
+from metagpt.roles import Role
+from ..utils.runtime_context import SharedRuntimeContext
+from ..actions.evaluation_actions import (
+    RunAlloyAnalyzer,
+    InterpretResults,
+    GenerateFeedback,
+    UpdateRequirements,
+    RefineFeedback
+)
+
+
+class EvaluatorRole(Role):
+    """
+    Evaluator agent for Alloy verification and requirements improvement.
+
+    Uses SharedRuntimeContext for memory, prompts, and artifacts.
+    """
+
+    def __init__(self, context: SharedRuntimeContext):
+        """
+        Initialize Evaluator.
+
+        Args:
+            context: Shared runtime context
+        """
+        super().__init__(
+            name="Evaluator",
+            profile="Evaluator"
+        )
+
+        self.context = context
+
+        # Set up actions with context
+        self.set_actions([
+            RunAlloyAnalyzer(context, agent_name="Evaluator"),
+            InterpretResults(context, agent_name="Evaluator"),
+            GenerateFeedback(context, agent_name="Evaluator"),
+            UpdateRequirements(context, agent_name="Evaluator"),
+            RefineFeedback(context, agent_name="Evaluator")
+        ])
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — entire module: src/agents/requirement_engineer.py (41 lines)
+// Reason: v2 workflow calls actions directly; only referenced by stale test/test_agents.py
+////////////////////////////////////////////////////////////////////////////////////////////////////
+"""
+Requirement Engineer agent (v2 - uses SharedRuntimeContext).
+
+Standard MetaGPT Role with context-aware actions.
+"""
+from metagpt.roles import Role
+from ..utils.runtime_context import SharedRuntimeContext
+from ..actions.requirement_actions import (
+    AnalyzeRequirements,
+    BuildAlloyModel,
+    UpdateAlloyModel
+)
+
+
+class RequirementEngineerRole(Role):
+    """
+    Requirement Engineer agent for requirements analysis and Alloy modeling.
+
+    Uses SharedRuntimeContext for memory, prompts, and artifacts.
+    """
+
+    def __init__(self, context: SharedRuntimeContext):
+        """
+        Initialize Requirement Engineer.
+
+        Args:
+            context: Shared runtime context
+        """
+        super().__init__(
+            name="RequirementEngineer",
+            profile="RequirementEngineer"
+        )
+
+        self.context = context
+
+        # Set up actions with context
+        self.set_actions([
+            AnalyzeRequirements(context, agent_name="RE"),
+            BuildAlloyModel(context, agent_name="RE"),
+            UpdateAlloyModel(context, agent_name="RE")
+        ])
+
+====================================================================================================
+PART 2: UNUSED FUNCTIONS / METHODS IN OTHERWISE-LIVE MODULES
+====================================================================================================
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/actions/evaluation_actions.py:627-672  (_find_comprehensive_instance)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def _find_comprehensive_instance(self, instances: List[Dict]) -> Optional[Dict]:
+        """
+        Find the most comprehensive satisfying instance.
+
+        Priority:
+        1. Instance named "All_Requirements"
+        2. Longest R-chain (R1R2R3 > R1R2 > R1)
+        3. Instance named "baseline" (existing system)
+        4. Last instance in the list
+
+        Args:
+            instances: List of satisfying instance dictionaries
+
+        Returns:
+            Most comprehensive instance or None
+        """
+        if not instances:
+            return None
+
+        # Priority 1: Look for "All_Requirements"
+        for inst in instances:
+            if inst.get('command_name') == 'All_Requirements':
+                return inst
+
+        # Priority 2: Find longest R-chain (R1R2R3 > R1R2 > R1)
+        r_chain_instances = []
+        for inst in instances:
+            cmd_name = inst.get('command_name', '')
+            # Count consecutive R digits (R1, R1R2, R1R2R3, etc.)
+            if cmd_name.startswith('R') and any(c.isdigit() for c in cmd_name):
+                # Count how many R-number pairs
+                r_count = cmd_name.count('R')
+                r_chain_instances.append((r_count, inst))
+
+        if r_chain_instances:
+            # Sort by R-count descending, return highest
+            r_chain_instances.sort(key=lambda x: x[0], reverse=True)
+            return r_chain_instances[0][1]
+
+        # Priority 3: Look for "baseline"
+        for inst in instances:
+            if inst.get('command_name') == 'baseline':
+                return inst
+
+        # Priority 4: Return last instance (fallback)
+        return instances[-1]
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/file_manager.py:213-225  (create_analyzer_output_dir)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def create_analyzer_output_dir(self, iteration: int) -> Path:
+        """
+        Create output directory for analyzer results.
+
+        Args:
+            iteration: Iteration number
+
+        Returns:
+            Path to output directory
+        """
+        output_path = self.output_dir / str(iteration)
+        output_path.mkdir(parents=True, exist_ok=True)
+        return output_path
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/file_manager.py:227-240  (get_analyzer_output_files)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_analyzer_output_files(self, iteration: int) -> List[Path]:
+        """
+        Get all analyzer output files for a given iteration.
+
+        Args:
+            iteration: Iteration number
+
+        Returns:
+            List of output file paths
+        """
+        output_path = self.output_dir / str(iteration)
+        if not output_path.exists():
+            return []
+        return list(output_path.glob("*.json"))
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/file_manager.py:318-330  (create_user_prompt_file)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def create_user_prompt_file(self, prompt: str, filename: str = "user_prompt.txt"):
+        """
+        Create a file with prompt for user.
+
+        Args:
+            prompt: Prompt text
+            filename: Name of prompt file
+        """
+        filepath = self.base_dir / filename
+        with open(filepath, 'w') as f:
+            f.write(prompt)
+        print(f"\nUser prompt created: {filepath}")
+        print(f"Please review and provide your response in 'user_feedback.txt'")
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/file_manager.py:298-316  (load_user_feedback)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def load_user_feedback(self, feedback_file: str = "user_feedback.txt") -> Optional[str]:
+        """
+        Load user feedback from file.
+
+        Args:
+            feedback_file: Name of feedback file
+
+        Returns:
+            Feedback content or None
+        """
+        filepath = self.base_dir / feedback_file
+        if filepath.exists():
+            with open(filepath, 'r') as f:
+                content = f.read()
+            # Archive the feedback file after reading
+            archive_path = self.base_dir / f"archived_{feedback_file}"
+            shutil.move(str(filepath), str(archive_path))
+            return content
+        return None
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/artifact_store.py:36-38  (get_requirements)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_requirements(self, iteration: int) -> Optional[str]:
+        """Get requirements for specific iteration."""
+        return self.requirements.get(iteration)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/artifact_store.py:81-83  (get_alloy_model)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_alloy_model(self, iteration: int) -> Optional[str]:
+        """Get Alloy model for specific iteration."""
+        return self.alloy_models.get(iteration)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/artifact_store.py:113-115  (get_evaluation)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_evaluation(self, iteration: int) -> Optional[str]:
+        """Get evaluation for specific iteration."""
+        return self.evaluations.get(iteration)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/artifact_store.py:101-106  (get_latest_analyzer_results)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_latest_analyzer_results(self) -> Optional[Dict[str, Any]]:
+        """Get most recent analyzer results."""
+        if not self.analyzer_results:
+            return None
+        max_iter = max(self.analyzer_results.keys())
+        return self.analyzer_results[max_iter]
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/artifact_store.py:161-164  (get_all_feedback)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_all_feedback(self) -> List[str]:
+        """Get all feedback in chronological order."""
+        sorted_iters = sorted(self.feedback.keys())
+        return [self.feedback[i] for i in sorted_iters]
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/artifact_store.py:172-180  (has_iteration)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def has_iteration(self, iteration: int) -> bool:
+        """Check if iteration has any stored data."""
+        return (
+            iteration in self.requirements or
+            iteration in self.alloy_models or
+            iteration in self.analyzer_results or
+            iteration in self.evaluations or
+            iteration in self.feedback
+        )
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/learning_system.py:248-283  (get_all_learning_for_prompt)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_all_learning_for_prompt(
+        self,
+        agent_name: str,
+        action_name: str,
+        lesson_limit: int = 10,
+        pattern_limit: int = 5
+    ) -> str:
+        """
+        Get all learning (lessons + patterns) formatted for prompt.
+
+        Args:
+            agent_name: Agent name
+            action_name: Action name
+            lesson_limit: Max lessons to include
+            pattern_limit: Max patterns to include
+
+        Returns:
+            Formatted string with both lessons and patterns
+        """
+        sections = []
+
+        # Add lessons
+        lessons_str = self.get_lessons_for_prompt(
+            agent_name, action_name, lesson_limit
+        )
+        if lessons_str:
+            sections.append(lessons_str)
+
+        # Add patterns
+        patterns_str = self.get_patterns_for_prompt(
+            agent_name, action_name, pattern_limit
+        )
+        if patterns_str:
+            sections.append(patterns_str)
+
+        return "\n\n".join(sections) if sections else ""
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/learning_system.py:285-331  (get_lessons_semantic)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_lessons_semantic(
+        self,
+        query: str,
+        agent_name: str,
+        action_name: str,
+        limit: int = 10
+    ) -> str:
+        """
+        Get lessons using semantic search based on query context.
+
+        If semantic memory is available, retrieves lessons similar to the query.
+        Otherwise, falls back to tag-based retrieval.
+
+        Args:
+            query: Query text describing current context/problem
+            agent_name: Agent to get lessons for
+            action_name: Action to get lessons for
+            limit: Maximum number of lessons
+
+        Returns:
+            Formatted string ready for prompt insertion
+        """
+        # Check if semantic memory is available
+        if hasattr(self.memory, 'retrieve_similar'):
+            # Use semantic search
+            lessons = self.memory.get_lessons(
+                agent=agent_name,
+                action=action_name,
+                limit=limit,
+                query=query
+            )
+        else:
+            # Fall back to tag-based retrieval
+            lessons = self.memory.get_lessons(
+                agent=agent_name,
+                action=action_name,
+                limit=limit
+            )
+
+        if not lessons:
+            return ""
+
+        lines = ["Previous Lessons Learned:"]
+        for i, lesson in enumerate(lessons, 1):
+            lines.append(f"{i}. {lesson}")
+
+        return "\n".join(lines)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/actions/lesson_aware_action.py:192-209  (format_patterns)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def format_patterns(self, patterns: List[str]) -> str:
+        """
+        Format patterns for prompt inclusion.
+
+        Args:
+            patterns: List of pattern strings
+
+        Returns:
+            Formatted string
+        """
+        if not patterns:
+            return ""
+
+        lines = ["Observed Patterns:"]
+        for i, pattern in enumerate(patterns, 1):
+            lines.append(f"{i}. {pattern}")
+
+        return "\n".join(lines)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/actions/lesson_aware_action.py:222-224  (get_file_manager)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_file_manager(self) -> FileManager:
+        """Access file manager for I/O operations."""
+        return self.context.file_manager
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/memory_system.py:205-228  (get_events)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_events(
+        self,
+        agent: Optional[str] = None,
+        iteration: Optional[int] = None,
+        limit: int = 10
+    ) -> List[str]:
+        """
+        Convenience method to get event content.
+
+        Args:
+            agent: Filter by agent
+            iteration: Filter by iteration
+            limit: Maximum number
+
+        Returns:
+            List of event strings
+        """
+        items = self.retrieve(
+            agent=agent,
+            iteration=iteration,
+            item_type="event",
+            limit=limit
+        )
+        return [item.content for item in items]
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/semantic_memory.py:502-550  (get_events)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_events(
+        self,
+        agent: Optional[str] = None,
+        action: Optional[str] = None,
+        limit: int = 10,
+        query: Optional[str] = None
+    ) -> List[str]:
+        """
+        Get events, optionally using semantic search.
+
+        Args:
+            agent: Filter by agent
+            action: Filter by action
+            limit: Maximum number
+            query: If provided, use semantic search
+
+        Returns:
+            List of event strings
+        """
+        if query:
+            results = self.retrieve_similar(
+                query=query,
+                item_type="event",
+                agent=agent,
+                action=action,
+                limit=limit
+            )
+            return [r['content'] for r in results]
+        else:
+            where_filter = None
+            if agent and action:
+                where_filter = {"$and": [{"agent": agent}, {"action": action}]}
+            elif agent:
+                where_filter = {"agent": agent}
+            elif action:
+                where_filter = {"action": action}
+
+            try:
+                results = self.events_collection.get(
+                    where=where_filter,
+                    limit=limit
+                )
+
+                if results and results['documents']:
+                    return results['documents']
+            except Exception as e:
+                print(f"Warning: Error getting events: {e}")
+            
+            return []
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/config_loader.py:57-59  (get_alloy_config)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_alloy_config(self) -> Dict[str, Any]:
+        """Get Alloy Analyzer configuration."""
+        return self.config.get('alloy', {})
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/config_loader.py:61-63  (get_workflow_config)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_workflow_config(self) -> Dict[str, Any]:
+        """Get workflow configuration."""
+        return self.config.get('workflow', {})
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/config_loader.py:65-67  (get_paths_config)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_paths_config(self) -> Dict[str, str]:
+        """Get file paths configuration."""
+        return self.config.get('paths', {})
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/config_loader.py:69-71  (get_agents_config)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_agents_config(self) -> Dict[str, Any]:
+        """Get agents configuration."""
+        return self.config.get('agents', {})
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/config_loader.py:73-75  (get_user_interaction_config)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_user_interaction_config(self) -> Dict[str, Any]:
+        """Get user interaction configuration."""
+        return self.config.get('user_interaction', {})
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/alloy_executor.py:852-894  (get_summary)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def get_summary(self, analysis: Dict[str, Any]) -> str:
+        """
+        Get human-readable summary of analysis.
+
+        Args:
+            analysis: Analysis dictionary
+
+        Returns:
+            Summary string
+        """
+        if not analysis.get("has_results", False):
+            return "No analysis results available."
+
+        summary_parts = [
+            f"Analysis Results ({analysis['num_files']} file(s)):",
+            ""
+        ]
+
+        if analysis["has_syntax_errors"]:
+            summary_parts.append(f"❌ Syntax Errors Found: {len(analysis['syntax_errors'])}")
+        else:
+            summary_parts.append("✓ No syntax errors")
+
+        if analysis["has_counterexamples"]:
+            summary_parts.append(f"⚠ Counterexamples Found: {len(analysis['counterexamples'])}")
+            for ce in analysis["counterexamples"]:
+                summary_parts.append(f"  - {ce['command_name']}")
+        else:
+            summary_parts.append("✓ No counterexamples")
+
+        if analysis["has_satisfying_instances"]:
+            summary_parts.append(f"✓ Satisfying Instances: {len(analysis['instances'])}")
+            for inst in analysis["instances"]:
+                summary_parts.append(f"  - {inst['command_name']}")
+        else:
+            summary_parts.append("⚠ No satisfying instances")
+
+        if analysis.get("unsat_commands"):
+            summary_parts.append(f"\nℹ UNSAT Commands (no instances found): {len(analysis['unsat_commands'])}")
+            for unsat in analysis["unsat_commands"]:
+                summary_parts.append(f"  - {unsat['type']} {unsat['name']}")
+
+        return "\n".join(summary_parts)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/logger.py:79-88  (log_section)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def log_section(self, title: str):
+        """
+        Log a section header.
+
+        Args:
+            title: Section title
+        """
+        self.log_separator()
+        self.log(title)
+        self.log_separator()
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/error_normalizer.py:346-349  (normalize_error)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+def normalize_error(analysis: Dict[str, Any], model_path: Optional[str] = None,
+                    logger=None) -> Optional[Dict[str, Any]]:
+    """Module-level convenience wrapper around ErrorNormalizer.run()."""
+    return ErrorNormalizer(logger=logger).run(analysis, model_path)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/regression_log.py:264-287  (update_actual_impact)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def update_actual_impact(
+        self,
+        iteration_id: int,
+        actual_impact: ImpactAnalysis,
+        outcome_classification: str
+    ) -> bool:
+        """
+        Update actual impact and outcome classification for an entry.
+
+        Args:
+            iteration_id: Iteration ID to update
+            actual_impact: Actual impact observed
+            outcome_classification: Outcome classification by Evaluator
+
+        Returns:
+            True if updated, False if entry not found
+        """
+        for entry in self.entries:
+            if entry.iteration_id == iteration_id:
+                entry.actual_impact = actual_impact
+                entry.outcome_classification = outcome_classification
+                self._save_to_file()
+                return True
+        return False
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/prompt_manager.py:276-290  (validate_prompt)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def validate_prompt(self, agent_name: str, action_name: str) -> bool:
+        """
+        Check if prompt exists for agent/action.
+
+        Args:
+            agent_name: Agent name
+            action_name: Action name
+
+        Returns:
+            True if prompt exists, False otherwise
+        """
+        return (
+            agent_name in self.prompts and
+            action_name in self.prompts[agent_name]
+        )
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/cli_interaction.py:396-404  (show_file_update)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def show_file_update(self, file_path: str, description: str = "Updated"):
+        """
+        Show file update notification.
+
+        Args:
+            file_path: Path to updated file
+            description: Description of update
+        """
+        self.logger.log_file_update(file_path, description)
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/cli_interaction.py:406-443  (create_clarification_request)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def create_clarification_request(self, iteration: int, requirements_file: str) -> tuple[str, str]:
+        """
+        Create clarification request prompt.
+
+        Args:
+            iteration: Current iteration
+            requirements_file: Path to requirements file
+
+        Returns:
+            Tuple of (full_prompt, concise_prompt)
+        """
+        full_prompt = f"""
+CLARIFICATION REQUEST - Iteration {iteration}
+
+The Requirement Engineer has analyzed your requirements and created a structured
+requirements document. Please review the document and provide clarification on any
+assumptions or ambiguities.
+
+Requirements document: {requirements_file}
+
+Please review the document and provide:
+- Clarifications on any assumptions
+- Corrections to any misunderstandings
+- Additional context or constraints
+
+You can also confirm if the requirements are correctly understood.
+"""
+
+        concise_prompt = f"""
+CLARIFICATION REQUEST - Iteration {iteration}
+
+Requirements document created: {requirements_file}
+
+Please review and provide clarification on assumptions and requirements.
+Type your feedback below (end with 'END' on a new line):
+"""
+
+        return full_prompt, concise_prompt
+
+////////////////////////////////////////////////////////////////////////////////////////////////////
+//UNUSED code — src/utils/cli_interaction.py:445-512  (create_evaluation_request)
+////////////////////////////////////////////////////////////////////////////////////////////////////
+    def create_evaluation_request(self, iteration: int, current_state: str,
+                                  has_errors: bool, has_counterexamples: bool,
+                                  has_instances: bool) -> tuple[str, str]:
+        """
+        Create evaluation request prompt.
+
+        Args:
+            iteration: Current iteration
+            current_state: Current state summary
+            has_errors: Whether there are syntax errors
+            has_counterexamples: Whether there are counterexamples
+            has_instances: Whether there are satisfying instances
+
+        Returns:
+            Tuple of (full_prompt, concise_prompt)
+        """
+        status = []
+        if not has_errors:
+            status.append("✓ Syntax: OK")
+        else:
+            status.append("✗ Syntax: ERRORS")
+
+        if not has_counterexamples:
+            status.append("✓ Counterexamples: None")
+        else:
+            status.append("✗ Counterexamples: Found")
+
+        if has_instances:
+            status.append("✓ Instances: Valid scenarios exist")
+        else:
+            status.append("✗ Instances: None (over-constrained?)")
+
+        status_str = "\n".join(status)
+
+        full_prompt = f"""
+EVALUATION REVIEW - Iteration {iteration}
+
+{current_state}
+
+Analysis Results:
+{status_str}
+
+The Evaluator has analyzed the Alloy model and generated feedback for improvements.
+Check the AnalyzerOutput/{iteration}/ directory for detailed results.
+
+Please provide:
+1. Your feedback on the current state
+2. Any additional scenarios you want to check
+3. Type 'SATISFIED' if you're satisfied with the results
+
+If you have additional scenarios, describe:
+- Scenario name/description
+- What should be checked
+- Expected behavior
+"""
+
+        concise_prompt = f"""
+EVALUATION REVIEW - Iteration {iteration}
+
+{status_str}
+
+Results in: AnalyzerOutput/{iteration}/
+
+Provide feedback, additional scenarios, or type 'SATISFIED':
+(End with 'END' on a new line)
+"""
+
+        return full_prompt, concise_prompt

@@ -1,0 +1,64 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples
+- Predicates: Satisfiable
+- Instances: Meaningful (counterexample traces expose real defects)
+- Vacuity: None
+- Overall: Incomplete
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+1. At every Emergency mode entry, enforce strictly:
+   - (#s.emAdmins = 2)
+   - all a: s.emAdmins | a in Administrator
+   - all a1, a2: s.emAdmins | a1 != a2
+   - These must be encoded at every Emergency entry point, especially in transition facts or facts governing s.mode = Emergency and prevModeIsNormal[s].
+2. In EmergencyPrivilegeAssignment and related facts, ensure EmergencyPrivilege is assigned only to the two distinct emAdmins and is revoked for both immediately from the moment the system returns to Normal, with no privilege persistence in any subsequent Normal states.
+3. Refine EmergencyCredentialUpdateCorrectness so that needsCredentialUpdate is set to exactly the two emAdmins only in the first Normal state after Emergency, and is always empty in all other states (both Emergency and all other Normal states).
+4. Remove redundant or duplicated logic in facts (e.g., EmergencyEntryExactly2Distinct, EmergencyEntryNegativeCases, EmergencyEmAdminsAreDistinct) and consolidate Emergency entry logic to a single, consistently enforced fact.
+5. In assertions and scenario predicates, use explicit checks for set membership (a in Administrator) instead of isAdmin = True to ensure only actual Administrator sig members can be considered admins.
+6. Explicitly model isAdmin property as equivalent to membership in Administrator, and ensure consistency by enforcing that if a user is an admin, this is always reflected in the model.
+
+=== ASSUMPTIONS REVIEW ===
+- All Emergency mode entries must transition from Normal and require exactly two distinct emAdmins, both present in Administrator—keep.
+- Administrator membership is fixed for each user for the entire system run; no dynamic changes—keep.
+- isAdmin should be used only as a convenience field, and its value must always be consistent with explicit Administrator membership—enforce invariant.
+- Concurrency is abstracted as a single transition step—keep.
+- Constraints on Administrator count should be enforced via scenario predicates and facts, not by restricting command scopes—keep.
+
+=== STRONGER CHECKS ===
+1. Add explicit negative assertions that Emergency mode cannot be entered:
+   - With fewer than two distinct emAdmins (cardinality < 2)
+   - With more than two emAdmins (cardinality > 2)
+   - With any emAdmin not in Administrator
+2. Add assertion(s) that, after Emergency ends, all EmergencyPrivileges are revoked immediately and remain revoked for both emAdmins in all subsequent Normal states.
+3. Add assertion(s) for needsCredentialUpdate to explicitly check it is non-empty only in the first Normal state after Emergency and always empty otherwise.
+4. Add negative cases to check that no user who is not in Administrator can ever appear in emAdmins at Emergency entry.
+5. Add an invariant assertion that isAdmin = True if and only if the user is a member of Administrator.
+
+=== REQUIREMENT_UPDATES ===
+1. Clarify in requirements that "exactly two distinct emAdmins" means: cardinality is two, both are present in Administrator, and they are distinct (no duplicates even by signature).
+2. State explicitly that EmergencyPrivilege must be revoked for both emAdmins immediately at the transition to Normal and in all subsequent Normal states.
+3. Specify that needsCredentialUpdate is set only in the first Normal state after Emergency and always empty otherwise—including all Emergency and other Normal states.
+4. Add a requirement that all negative Emergency entry scenarios (fewer than 2, more than 2, non-Admin, duplicates) must be encoded and shown impossible in the model.
+5. State as a requirement that Administrator membership is fixed and that isAdmin = True must always imply and be implied by Administrator membership.
+
+=== USER QUESTIONS ===
+1. Confirmed: EmergencyPrivilege must be revoked for all emAdmins immediately upon transition to Normal and remain revoked in all subsequent Normal states.
+2. Confirmed: Administrator status (membership in Administrator) is fixed per user for the duration of the system run.
+3. Confirmed: If a user is an admin, this must be noted in the model as an invariant—model should ensure isAdmin = True if and only if in Administrator.
+
+=== HANDOFF TO RE ===
+1. Update and consolidate all Emergency entry constraints to require exactly two distinct emAdmins, both in Administrator, in every possible Emergency entry transition.
+2. Refine EmergencyPrivilege logic to ensure all such privileges are revoked immediately for both emAdmins at the first and all subsequent Normal states after Emergency.
+3. Correct EmergencyCredentialUpdate logic to ensure it is non-empty only in the first Normal state after Emergency and always empty otherwise.
+4. Add/strengthen negative assertions that explicitly forbid Emergency entry with <2, >2, or non-Administrator emAdmins, and with duplicates.
+5. Update requirements to reflect all clarified constraints and negative/edge-case scenario requirements.
+6. Add and enforce an invariant that isAdmin = True if and only if the user is in Administrator.
+```
+
+[LESSON]: When user confirms invariants (e.g., fixed Administrator membership), model and requirements must explicitly encode and check these, removing any ambiguity from auxiliary fields like isAdmin.
+
+[EVENT]: Assertion failures related to EmergencyPrivilege persistence and Emergency entry with invalid emAdmins were traced to missing or inconsistently enforced constraints on set membership and cardinality. User clarification enabled model tightening and requirement updates to enforce invariants and privilege revocation timing.
+

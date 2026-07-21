@@ -6,6 +6,104 @@ from pathlib import Path
 from typing import Dict, List, Any, Optional, Tuple
 
 
+# Default keywords that open a syntactic block in an Alloy model.
+# `open` is included so an error on an import line is attributed to that
+# statement rather than to an unrelated block further up the file.
+BLOCK_KEYWORDS = ['pred', 'fact', 'fun', 'sig', 'assert', 'enum', 'run', 'check', 'open']
+
+
+def find_containing_block(
+    file_path: str,
+    line_num: int,
+    block_keywords: Optional[List[str]] = None,
+    boundary_keywords: Optional[List[str]] = None,
+    max_block_size: int = 100,
+) -> Optional[Tuple[int, int, str]]:
+    """
+    Find the complete syntactic block containing a line, using keyword-to-keyword
+    boundaries (backward search for the nearest opening keyword, forward search
+    for the next boundary keyword).
+
+    Shared helper reused by AlloyExecutor (code-snippet extraction) and
+    ErrorNormalizer (enclosing-construct detection).
+
+    Args:
+        file_path: Path to the .als file.
+        line_num: Target line number (1-indexed, as reported by Alloy).
+        block_keywords: Keywords that can open a block (default: BLOCK_KEYWORDS).
+        boundary_keywords: Keywords that delimit the end of a block
+            (default: same as block_keywords).
+        max_block_size: Blocks larger than this are treated as not found.
+
+    Returns:
+        (start_line, end_line, block_type) with 1-indexed lines, where block_type
+        is "<keyword> <name>" (e.g. "pred EmergencyCoverage_Positive") or just
+        "<keyword>" when no name is present; or None if not found.
+    """
+    block_keywords = block_keywords or BLOCK_KEYWORDS
+    boundary_keywords = boundary_keywords or block_keywords
+
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+
+        # Error on first line - no backward search possible
+        if line_num <= 1:
+            return None
+
+        error_idx = min(line_num - 1, len(lines) - 1)
+
+        # Step 1: Search BACKWARD from the target line to the closest block keyword
+        keyword_pattern = re.compile(r'^\s*(' + '|'.join(block_keywords) + r')\b')
+        block_start_idx = None
+        block_keyword = None
+        block_name = None
+
+        for i in range(error_idx, -1, -1):
+            match = keyword_pattern.match(lines[i])
+            if match:
+                block_start_idx = i
+                block_keyword = match.group(1)
+                name_match = re.match(r'^\s*\w+\s+(\w+)', lines[i])
+                if name_match:
+                    block_name = name_match.group(1)
+                break
+
+        if block_start_idx is None:
+            return None  # No block keyword found
+
+        # Step 2: Search FORWARD from block start to the next boundary keyword
+        boundary_pattern = re.compile(r'^\s*(' + '|'.join(boundary_keywords) + r')\b')
+        block_end_idx = None
+        for i in range(block_start_idx + 1, len(lines)):
+            if boundary_pattern.match(lines[i]):
+                block_end_idx = i - 1  # End just before next keyword
+                break
+
+        if block_end_idx is None:
+            block_end_idx = len(lines) - 1
+
+        # Step 3: Trim trailing blank lines and comments
+        while block_end_idx > block_start_idx:
+            line = lines[block_end_idx].strip()
+            if line != '' and not line.startswith('//'):
+                break
+            block_end_idx -= 1
+
+        # Check block size
+        if block_end_idx - block_start_idx + 1 > max_block_size:
+            return None  # Block too large, fallback to context lines
+
+        block_type = f"{block_keyword} {block_name}" if block_name else block_keyword
+
+        # Return 1-indexed line numbers
+        return (block_start_idx + 1, block_end_idx + 1, block_type)
+
+    except Exception:
+        # If anything fails, return None to fallback to context lines
+        return None
+
+
 class AlloyExecutor:
     """Executes Alloy Analyzer and parses results."""
 
@@ -193,83 +291,78 @@ class AlloyExecutor:
             - end_line: 1-indexed line where block ends
             - block_type: keyword name with block name (e.g., "pred EmergencyCoverage_Positive")
         """
-        import re
+        # Delegate to the shared module-level helper (also used by ErrorNormalizer).
+        return find_containing_block(file_path, line_num)
+
+    def _create_error_marker(self, line_content: str, col_num: int, prefix_len: int) -> str:
+        """
+        Create an enhanced error marker showing the unexpected token and context.
         
-        BLOCK_KEYWORDS = ['pred', 'fact', 'fun', 'sig', 'assert', 'enum']
-        BOUNDARY_KEYWORDS = ['pred', 'fact', 'fun', 'sig', 'assert', 'enum', 'run', 'check']
-        MAX_BLOCK_SIZE = 100
+        Args:
+            line_content: The line of code with the error
+            col_num: Column number (1-indexed)
+            prefix_len: Length of line number prefix
+            
+        Returns:
+            Formatted error marker string
+        """
+        marker_pos = prefix_len + col_num - 1
         
-        try:
-            with open(file_path, 'r', encoding='utf-8') as f:
-                lines = f.readlines()
-            
-            # Error on first line - no backward search possible
-            if line_num <= 1:
-                return None
-            
-            # Convert to 0-indexed
-            error_idx = line_num - 1
-            
-            # Step 1: Search BACKWARD from error line to find closest block keyword
-            keyword_pattern = re.compile(r'^\s*(' + '|'.join(BLOCK_KEYWORDS) + r')\b')
-            block_start_idx = None
-            block_keyword = None
-            block_name = None
-            
-            for i in range(error_idx, -1, -1):
-                match = keyword_pattern.match(lines[i])
-                if match:
-                    block_start_idx = i
-                    block_keyword = match.group(1)
-                    # Extract block name if present (e.g., "pred MyPredicate" -> "MyPredicate")
-                    name_match = re.match(r'^\s*\w+\s+(\w+)', lines[i])
-                    if name_match:
-                        block_name = name_match.group(1)
-                    break
-            
-            if block_start_idx is None:
-                return None  # No block keyword found
-            
-            # Step 2: Search FORWARD from block start to find next boundary keyword
-            # Use BOUNDARY_KEYWORDS (includes run/check) to find where the block ends
-            boundary_pattern = re.compile(r'^\s*(' + '|'.join(BOUNDARY_KEYWORDS) + r')\b')
-            block_end_idx = None
-            
-            for i in range(block_start_idx + 1, len(lines)):
-                if boundary_pattern.match(lines[i]):
-                    block_end_idx = i - 1  # End just before next keyword
-                    break
-            
-            if block_end_idx is None:
-                # No next keyword found - use end of file
-                block_end_idx = len(lines) - 1
-            
-            # Step 3: Trim trailing blank lines and comments
-            # Comments between blocks should not be included in either block
-            while block_end_idx > block_start_idx:
-                line = lines[block_end_idx].strip()
-                # Stop trimming if we hit a non-blank, non-comment line
-                if line != '' and not line.startswith('//'):
-                    break
-                block_end_idx -= 1
-            
-            # Check block size
-            block_size = block_end_idx - block_start_idx + 1
-            if block_size > MAX_BLOCK_SIZE:
-                return None  # Block too large, fallback to context lines
-            
-            # Create block type description
-            if block_name:
-                block_type = f"{block_keyword} {block_name}"
-            else:
-                block_type = block_keyword
-            
-            # Return 1-indexed line numbers
-            return (block_start_idx + 1, block_end_idx + 1, block_type)
-            
-        except Exception as e:
-            # If anything fails, return None to fallback to context lines
-            return None
+        # Extract the character at the error position (0-indexed)
+        error_char_idx = col_num - 1
+        
+        if error_char_idx < 0 or error_char_idx >= len(line_content):
+            # Error position out of bounds, use basic marker
+            return ' ' * marker_pos + f'^^ ERROR at column {col_num}'
+        
+        error_char = line_content[error_char_idx]
+        
+        # Extract context: word before + error token + word after
+        # Find the word BEFORE the error position
+        prev_word_end = error_char_idx - 1
+        # Skip backwards over whitespace
+        while prev_word_end >= 0 and line_content[prev_word_end] in ' \t':
+            prev_word_end -= 1
+
+        prev_word = ""
+        if prev_word_end >= 0:
+            # Find start of previous word
+            prev_word_start = prev_word_end
+            while prev_word_start > 0 and line_content[prev_word_start - 1] not in ' \t()[]{},:;':
+                prev_word_start -= 1
+            prev_word = line_content[prev_word_start:prev_word_end + 1]
+
+        # Find the word AFTER the error position
+        next_word_start = error_char_idx + 1
+        # Skip forwards over whitespace
+        while next_word_start < len(line_content) and line_content[next_word_start] in ' \t':
+            next_word_start += 1
+
+        next_word = ""
+        if next_word_start < len(line_content):
+            # Find end of next word
+            next_word_end = next_word_start
+            while next_word_end < len(line_content) and line_content[next_word_end] not in ' \t()[]{},:;':
+                next_word_end += 1
+            next_word = line_content[next_word_start:next_word_end]
+
+        # Build context: "prev_word error_char next_word"
+        context_parts = []
+        if prev_word:
+            context_parts.append(prev_word)
+        context_parts.append(error_char)
+        if next_word:
+            context_parts.append(next_word)
+
+        parsing_context = " ".join(context_parts)
+        
+        # Format the error marker
+        if parsing_context and len(parsing_context) > 1:
+            marker = ' ' * marker_pos + f"^^ ERROR at column {col_num}: unexpected token '{error_char}' while parsing '{parsing_context}'"
+        else:
+            marker = ' ' * marker_pos + f"^^ ERROR at column {col_num}: unexpected token '{error_char}'"
+        
+        return marker
 
     def _extract_code_snippet(
         self, 
@@ -325,8 +418,7 @@ class AlloyExecutor:
                         # Add error marker right after the error line
                         if i == line_idx:
                             prefix_len = len(f"{i + 1:3d}: ")
-                            marker_pos = prefix_len + col_num - 1
-                            marker = ' ' * marker_pos + '^^ ERROR at column ' + str(col_num)
+                            marker = self._create_error_marker(line_content, col_num, prefix_len)
                             snippet_lines.append(marker)
 
                 return '\n'.join(snippet_lines)
@@ -349,8 +441,7 @@ class AlloyExecutor:
                         # Add error marker right after the error line
                         if i == line_idx:
                             prefix_len = len(f"{i + 1:3d}: ")
-                            marker_pos = prefix_len + col_num - 1
-                            marker = ' ' * marker_pos + '^^ ERROR at column ' + str(col_num)
+                            marker = self._create_error_marker(line_content, col_num, prefix_len)
                             snippet_lines.append(marker)
 
                 return '\n'.join(snippet_lines)
@@ -728,16 +819,32 @@ class AlloyExecutor:
             if not analysis["comprehensive_instance"]:
                 analysis["comprehensive_instance"] = instances[-1]
 
-        # Select up to 3 sample instances for Evaluator review
-        # Prioritize: comprehensive + up to 2 others
+        # Select only 2 specific instances for Evaluator review:
+        # 1. All_Requirements (or AllRequirements) - comprehensive requirement validation
+        # 2. baseline - existing system state
         sample_set = []
-        if analysis["comprehensive_instance"]:
-            sample_set.append(analysis["comprehensive_instance"])
-
-        for inst in analysis["instances"]:
-            if inst != analysis["comprehensive_instance"] and len(sample_set) < 3:
-                sample_set.append(inst)
-
+        
+        # Look for All_Requirements or AllRequirements
+        all_req_instance = None
+        for inst in instances:
+            cmd_name = inst["command_name"]
+            if cmd_name in ["All_Requirements", "AllRequirements"]:
+                all_req_instance = inst
+                break
+        
+        # Look for baseline
+        baseline_instance = None
+        for inst in instances:
+            if inst["command_name"] == "baseline":
+                baseline_instance = inst
+                break
+        
+        # Add to sample set (order: All_Requirements first, then baseline)
+        if all_req_instance:
+            sample_set.append(all_req_instance)
+        if baseline_instance:
+            sample_set.append(baseline_instance)
+        
         analysis["sample_instances"] = sample_set
 
         return analysis

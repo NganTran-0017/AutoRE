@@ -36,21 +36,11 @@ Analyze the input requirements and create a structured requirements document.
 1. Distinguish existing-system requirements from prospective-component requirements
 2. Identify key concepts, entities, and relationships
 3. Ask clarification ONLY for blocking assumptions that prevent abstract modeling
-4. Do not ask about implementation details, modeling details, or safely abstractable concerns
-5. Include any existing requirement that could influence the prospective module’s states, permissions, transitions, timing, or constraints. Do not abstract it away if leaving it out could change the module’s consistency, behaviors, or verification results.
-
-**Structure your requirements document with these sections:**
-- System Overview
-- Existing-System Assumptions and Constraints
-- Prospective Component Requirements (numbered R1, R2, R3, etc.)
-- Key Concepts and Entities
-- Assumptions Requiring Clarification
-- Constraints
+4. Do not ask about implementation details, modeling details, or safely abstractable concerns.
+5. Reproduce every existing requirement (E-prefixed) from the input verbatim, preserving IDs and numbering. Never drop, merge, renumber, or summarize an existing requirement into prose.
 
 **Input:**
 {{raw_requirements}}
-
-
 
 [SECTION: IncorporateClarifications]
 ### TASK: INCORPORATE USER CLARIFICATIONS
@@ -138,21 +128,13 @@ The model must be syntactically valid Alloy 6.
 
 {{lessons}}
 
+**Modeling Conventions (binding encoding decisions for THIS model - obey all):**
+{{modeling_conventions}}
 
-[SECTION: UpdateAlloyModel]
+
+[SECTION: UpdateAlloyModel_Base]
 ### ROLE:
 You are a Requirement Engineer specializing in formal requirements modeling and Alloy 6 specification. You update Alloy models based on feedback to verify whether the prospective component's requirements are internally consistent and consistent with existing system constraints.
-
-### TASK: UPDATE ALLOY MODEL
-
-Revise the existing Alloy model based on Evaluator feedback.
-
-**Your objectives:**
-1. Address issues and concerns based on the given feedback
-2. Only modify the necessary parts and keep the rest of the current Alloy model unchanged.
-3. 
-4. Maintain consistency with latest requirements
-5. Follow modeling guideline and keep the model abstract, syntactically valid with Alloy 6, focused on verification
 
 ### ALLOY MODELING GUIDELINES:
 
@@ -161,6 +143,7 @@ Model STRUCTURE, BEHAVIOR, and CONSTRAINTS, not implementation.
 1. Signatures: Clear names, careful multiplicities (one/lone/some/set)
 
 2. Facts: Encode existing-system assumptions, baseline rules, structural constraints
+   - MODELING DISCIPLINE (binding): facts are ONLY for existing-system requirements and assumptions that must always hold. Prospective requirements under verification MUST stay in predicates (R1, R1R2, ..., All_Requirements). NEVER move or encode a prospective requirement into a fact - even when feedback says to "enforce", "strengthen", or "strictly require" it: strengthen the requirement's PREDICATE instead. A fact applies globally, so one inconsistent unverified requirement in a fact makes the ENTIRE model - including `baseline` - UNSAT. Only promote a requirement into a fact after it is verified AND the user explicitly confirms it must always hold.
 
 3. Predicates: Define scenarios and transitions, verify with `run`
    - Create an empty `baseline` predicate to verify the existing system requirements (which are modeled as facts)
@@ -198,12 +181,96 @@ Model STRUCTURE, BEHAVIOR, and CONSTRAINTS, not implementation.
 **Evaluator Feedback:**
 {{evaluation_feedback}}
 
-**Latest Requirements:**
-{{requirements_document}}
+**Cross-Iteration Escalation Status (deterministic tracking):**
+{{escalation_directive}}
 
 {{lessons}}
 
-{{user_preferences}}
+**Modeling Conventions (binding encoding decisions for THIS model - obey all):**
+{{modeling_conventions}}
+
+[SECTION: UpdateAlloyModel_Mode1_SyntaxRepair]
+### TASK: SYNTAX-ONLY MODEL REPAIR
+
+Fix the current syntax/type error with MINIMAL changes.
+
+**CRITICAL CONSTRAINTS:**
+
+1. **Address ONLY the specific syntax/type error** identified in the Evaluator feedback
+2. **Make the SMALLEST possible change** to resolve the error - do not refactor unrelated code
+3. **DO NOT reinterpret requirements** or add new domain assumptions
+4. **DO NOT add/modify/remove facts, predicates, or assertions** unless directly involved in the syntax error
+5. **DO NOT strengthen or weaken behavior** unless absolutely required for type correctness
+6. **Preserve all existing model semantics** - the model's meaning should remain unchanged
+
+**Allowed Changes:**
+- Fix syntax errors (missing braces, parentheses, brackets, semicolons, etc.)
+- Fix type errors (correct type annotations, fix multiplicity errors)
+- Refactor predicate to function (or vice versa) ONLY if required by type system
+- Minimal local edits to resolve parsing/compilation errors
+
+**Forbidden Changes:**
+- Adding new facts, predicates, assertions, or run/check commands unrelated to the error
+- Modifying constraints, signatures, or fields not directly involved in the syntax error
+- Reinterpreting requirements or changing model behavior
+- "Improving" the model structure, naming, or organization
+- Making semantic changes while fixing syntax
+
+**MULTI-LOCATION PATTERN FIX (applies when the Evaluator feedback lists more than one affected location for the same error pattern):**
+The Alloy analyzer reports only the first error, but the same root-cause pattern often recurs in other blocks. When the [REPAIR INSTRUCTIONS] enumerate several locations (an "Affected locations (same pattern)" list, or steps naming multiple blocks) exhibiting the SAME error pattern:
+- Correcting EVERY listed occurrence is REQUIRED and COUNTS as addressing the reported error - it is NOT forbidden refactoring and does NOT violate the minimal-change constraint.
+- Apply the IDENTICAL correction consistently to all listed sites in this one update, so the same error does not resurface block-by-block on later iterations.
+- The minimal-change constraint still applies to everything else: do NOT touch any code that is not one of the listed occurrences.
+
+**USER-DIRECTED FIX OVERRIDE:**
+If the Evaluator feedback contains a [USER GUIDANCE COMPLIANCE] section, the repair originates from the HUMAN USER after repeated automated attempts failed. In that case:
+- Apply EVERY repair step in full - including construct replacements (e.g., replacing a fun with a pred), new `open` statements, and updates to all call sites of a changed construct. These count as addressing the error, not as forbidden refactoring.
+- Implementing the user's fix completely takes precedence over the minimal-change constraint. Do not partially apply it, keep the old construct alongside the new one, or downgrade any step.
+- Everything unrelated to the user-directed fix must still remain unchanged.
+
+**ESCALATION OVERRIDE (read the Cross-Iteration Escalation Status above):**
+- If it lists PREVIOUSLY ATTEMPTED FIXES, none of those edits may be re-applied - they already failed, even if the Evaluator feedback appears to suggest one of them again.
+- If STRATEGY is REWRITE_BLOCK, the minimal-change constraint is LIFTED for the block named under AFFECTED BLOCK (and only for that block): rewrite that entire block from scratch per the Evaluator's instructions, preserving its intended meaning and using the simplest valid Alloy 6 constructs, while leaving the rest of the model unchanged.
+- If STRATEGY is REGENERATE_BLOCK, DELETE the block named under AFFECTED BLOCK entirely and write a replacement derived from the LATEST REQUIREMENTS attached to the escalation directive - NOT from the old block text (it has resisted repair and is not a usable starting point). Preserve the block's name and parameters unless the Evaluator's instructions say otherwise; if the interface must change, update every block that references it. The minimal-change constraint is lifted for this block and its call sites only.
+- If STRATEGY is REQUIREMENTS_DIAGNOSIS, apply the Evaluator's INTERIM repair exactly as instructed (it may simplify the block or temporarily comment it out with a TODO); the requirement-level fix will arrive through the updated requirements document in a later iteration.
+- If STRATEGY is BREAK_OSCILLATION, make one coherent change that resolves both the current error and the error listed under OSCILLATING WITH ERROR; do not fix one at the expense of re-introducing the other.
+
+
+[SECTION: UpdateAlloyModel_Mode2_SemanticRepair]
+### TASK: SEMANTIC MODEL IMPROVEMENT
+
+Improve the model's behavior and correctness based on Evaluator feedback.
+
+**Your Objectives:**
+
+1. Address semantic issues identified in feedback, particularly under the REPAIR INSTRUCTIONS section
+2. Revise facts, predicates, and assertions to accurately reflect requirements
+3. Add missing constraints or relax overconstraints as needed
+4. Adjust requirement mapping and verification structure
+5. Maintain consistency with latest requirements document
+
+**Allowed Changes:**
+- Revise, add, or remove facts to properly encode system assumptions
+- Modify predicates to correctly represent requirement scenarios
+- Strengthen or weaken assertions based on actual requirements
+- Add missing constraints identified through counterexamples
+- Relax overconstraints causing unsat predicates
+- Adjust run/check commands for better verification coverage
+- Refactor model structure for clarity and correctness
+
+**Forbidden Changes:**
+- **DO NOT repeat approaches from failed fix history** - check regression log for blocked attempts
+- **DO NOT re-apply any fix listed in the Cross-Iteration Escalation Status** - those exact changes already failed in earlier iterations
+- **DO NOT convert a failing assertion into a fact, delete it, or weaken it** so its check passes - if the feedback's REQUIREMENT DIAGNOSIS marks an issue as requirement-level, leave the assertion in place until the requirements are updated
+- **DO NOT contradict user clarifications** provided in requirements document
+- **DO NOT make changes unrelated to the feedback** - stay focused on identified issues
+
+**ESCALATION OVERRIDE (read the Cross-Iteration Escalation Status above):**
+- If STRATEGY is REGENERATE_PREDICATES, the user has approved (or provisionally accepted) requirement updates for persistent issues. For each construct listed under REGENERATE: DELETE the predicate/fact entirely and write a replacement derived from the UPDATED requirements document - NOT from the old construct text (it has resisted repeated repair and is not a usable starting point). Preserve each construct's name and parameters unless the Evaluator feedback says otherwise; if an interface must change, update every construct that references it. The focused-change constraint is lifted for the listed constructs and their call sites only - everything else stays unchanged. If IMPLICATED REQUIREMENTS are listed, the regenerated constructs must encode exactly those requirements as now worded.
+
+**Latest Requirements:**
+{{requirements_document}}
+
 
 [SECTION: ResponseFormatRequirements]
 ### RESPONSE FORMAT:
@@ -213,6 +280,10 @@ For Requirements Documents:
 SYSTEM OVERVIEW
 ===============
 [High-level description]
+
+EXISTING-SYSTEM REQUIREMENTS AND CONSTRAINTS
+============================================
+E1: [preserved verbatim, keep original ID and sub-IDs E1.1, E1.2...]
 
 PROSPECTIVE FUNCTIONAL REQUIREMENTS
 =======================
@@ -245,26 +316,33 @@ CONSTRAINTS
 
 [SECTION: ResponseFormatUpdateAlloyModel]
 ### RESPONSE FORMAT FOR MODEL UPDATES:
-When updating an existing model, provide the following information before the updated model code:
+
+**CRITICAL: You MUST return the COMPLETE, FULL Alloy model, not a snippet.**
+
+Provide the following information before the updated model code:
 
 ```
 === FIX INTENT ===
-[1 sentence description of what you intend to fix/change and why]
+[1 sentence describing what you are fixing/changing and why]
 
 === SOURCE REFERENCE ===
-[What prompted this update: e.g., "Evaluator feedback: syntax error on line 45", "User clarification Q3_2", "Counterexample in assertDelegation"]
+[What prompted this update: e.g., "Evaluator syntax repair instruction: line 45 missing brace", "Evaluator feedback: Counterexample in assertDelegation", "User clarification Q3_2"]
 
 === EXPECTED IMPACT ===
-satToUnsat: [list run command names expected to become UNSAT, e.g., R1, R2, or "None"]
-unsatToSat: [list run command names expected to become SAT, e.g., R1R2, All_Requirements, or "None"]
-passToFail: [list assertion names expected to start failing, e.g., assertNoConflict, or "None"]
-failToPass: [list assertion names expected to start passing, e.g., assertDelegation, or "None"]
+satToUnsat: [list specific run command names expected to become UNSAT, e.g., "R1, R2" or "None"]
+unsatToSat: [list specific run command names expected to become SAT, e.g., "R1R2, All_Requirements" or "None"]
+passToFail: [list specific assertion names expected to start failing, e.g., "assertNoConflict" or "None"]
+failToPass: [list specific assertion names expected to start passing, e.g., "assertDelegation, assertMutex" or "None"]
 ```
 
-Then provide the updated Alloy model code:
+Then provide the COMPLETE updated Alloy model from first line to last:
 ```alloy
-[Updated Alloy 6 code]
+[THE ENTIRE updated Alloy 6 model - every single line from first open statement to final check command]
 ```
+
+**DO NOT write "(rest of model unchanged)" or return only modified sections.**
+**DO NOT provide snippets or excerpts - include the full model.**
+**The system needs the COMPLETE model to save to disk.**
 
 [SECTION: QualityStandards]
 ### QUALITY STANDARDS:
@@ -286,20 +364,27 @@ After completing each task, reflect on your work and record what you learned usi
 - Format: "[LESSON]: <What doesn't work> → <What must be used instead>.
 - Example: `[LESSON]: Can't use 'if-then-else' in facts → Must use implication (=>)`
 
-**[EVENT]: Concrete Alloy code changes ONLY
-- Use to record a solution to address an issue (fixed error or clarified requirement)
-- Example: `[EVENT]: Fixed syntax error line 40: replaced 'r' in variable name with 'rPrime' to avoid quote character`
-
 **When to record lessons:**
 - Discovered an Alloy 6 syntax rules (what's valid/invalid Alloy code)
 - Identified built-in utility behavior (how util/* modules work)
 - Type system constraints (what types work with what operators)
   - Operator limitations (what operators work on what types)
 
-**When to record events:**
-- Fixed an error (syntax, constraint, vacuity)
-- Fixed syntax error by changing specific code
-- Made a significant modeling choice to resolve an issue/abstract
+**[CONVENTION]: project-specific modeling/encoding decisions for THIS model ONLY**
+- Record when a durable encoding decision is settled for this model that future
+  iterations must keep applying - NOT a universal Alloy rule (that's a [LESSON]),
+  and NOT a natural-language requirement (that belongs in the requirements doc).
+- Format: `[CONVENTION]: <the binding encoding decision>`
+- Use for decisions like: which single variable represents a concept, which
+  construct encodes something, naming schemes, or a chosen representation among
+  valid alternatives.
+- Examples:
+  - `[CONVENTION]: Use exactly one variable for time steps (time OR State), never both.`
+  - `[CONVENTION]: Mark delegation initiation with a single variable (delegatedAt OR InitiatedIn), never both.`
+  - `[CONVENTION]: Do not introduce a separate duringEmergency variable; derive emergency-mode delegation from the system mode at initiation.`
+- All recorded conventions are re-injected into every model-building prompt, so
+  record a convention once the decision is stable rather than restating it in the
+  requirements document.
 
 **Memory Policy:**
 1. Review the retrieved lessons before acting

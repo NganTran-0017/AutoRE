@@ -14,9 +14,9 @@ async def test_semantic_dedup_with_merge():
 
     # Create memory system with deduplication enabled
     config = {
-        "similarity_threshold": 0.85,
+        "merge_threshold": 0.7,   # sim in [0.7, 0.91) -> merge
+        "drop_threshold": 0.91,   # sim >= 0.91 -> drop new as duplicate
         "merge_similar_lessons": True,
-        "update_min_length_ratio": 1.1,
         "memory_assistant_config": {
             "model": "gpt-4o-mini"
         }
@@ -52,11 +52,9 @@ async def test_semantic_dedup_with_merge():
     print("Expected: Should merge with existing lesson using MemoryAssistant")
     print()
 
-    # Store (will trigger merge)
+    # Store (will trigger merge). The merge now runs to completion
+    # synchronously inside store(), so no wait is needed afterwards.
     memory.store(lesson2, "lesson", "RE", "BuildAlloyModel", 2)
-
-    # Wait a moment for async merge to complete
-    await asyncio.sleep(2)
 
     lessons = memory.get_lessons(agent="RE", action="BuildAlloyModel")
     print(f"Lessons in memory after merge: {len(lessons)}")

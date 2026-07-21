@@ -2,6 +2,19 @@
 
 from src.utils.prompt_manager import PromptManager
 
+
+def shared_role_present(pm: PromptManager, prompt: str) -> bool:
+    """Check whether the shared [SECTION: Role] content was prepended to a prompt.
+
+    Some action sections carry their own focused "You are an Evaluator..." intro
+    line, so a phrase heuristic misfires; compare against the actual Role section.
+    """
+    role = pm.prompts.get("Evaluator", {}).get("Role", "").strip()
+    if not role:
+        return False
+    return role.splitlines()[0].strip() in prompt
+
+
 def test_update_requirements_exclusions():
     """Test that UpdateRequirements excludes Role and QualityStandards."""
 
@@ -22,7 +35,7 @@ def test_update_requirements_exclusions():
         prompt = pm.render_prompt("Evaluator", "UpdateRequirements", **test_vars)
 
         # Check what's excluded
-        has_role = "### ROLE:" in prompt or prompt.startswith("You are an Evaluator")
+        has_role = shared_role_present(pm, prompt)
         has_quality_standards = "QUALITY STANDARDS:" in prompt or "### QUALITY STANDARDS:" in prompt
         has_convergence = "CONVERGENCE CRITERIA:" in prompt or "### CONVERGENCE CRITERIA:" in prompt
         has_primary_goal = "PRIMARY GOAL:" in prompt or "### PRIMARY GOAL:" in prompt
@@ -73,15 +86,18 @@ def test_other_evaluator_actions_still_have_sections():
     print("=" * 80)
 
     test_cases = [
-        ("GenerateFeedback", {
+        ("GenerateSemanticFeedback", {
             "interpretation": "test",
             "requirements_document": "test",
             "alloy_model": "test",
             "lessons": "test",
+            "failed_fix_history": "None - this is the first attempt.",
+            "relevant_qa": "No relevant prior Q&A pairs found.",
             "user_preferences": "test"
         }),
         ("InterpretResults", {
             "analyzer_results": "test",
+            "regression_log": "test regression log",
             "requirements_document": "test",
             "alloy_model": "test",
             "user_preferences": "test"
@@ -94,7 +110,7 @@ def test_other_evaluator_actions_still_have_sections():
         try:
             prompt = pm.render_prompt("Evaluator", action_name, **test_vars)
 
-            has_role = "### ROLE:" in prompt or "You are an Evaluator" in prompt
+            has_role = shared_role_present(pm, prompt)
             has_quality = "QUALITY STANDARDS:" in prompt or "### QUALITY STANDARDS:" in prompt
 
             if has_role and has_quality:
@@ -130,8 +146,8 @@ def compare_with_refine_feedback():
         refine_fb_prompt = pm.render_prompt("Evaluator", "RefineFeedback",
             draft_feedback="test", user_review="test")
 
-        update_has_role = "### ROLE:" in update_req_prompt or update_req_prompt.startswith("You are")
-        refine_has_role = "### ROLE:" in refine_fb_prompt or refine_fb_prompt.startswith("You are")
+        update_has_role = shared_role_present(pm, update_req_prompt)
+        refine_has_role = shared_role_present(pm, refine_fb_prompt)
 
         print("\nRole Section Presence:")
         print(f"  UpdateRequirements: {'✗ PRESENT' if update_has_role else '✓ EXCLUDED'}")

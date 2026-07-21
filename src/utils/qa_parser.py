@@ -39,14 +39,28 @@ def parse_user_questions(response_text: str, section_name: str = "USER QUESTIONS
         return []
 
     questions = []
-    # Match numbered questions (1., 2., etc.)
-    question_pattern = r'^\d+\.\s*(.+?)(?=\n\d+\.|\Z)'
 
-    for match in re.finditer(question_pattern, section_content, re.MULTILINE | re.DOTALL):
+    # Try both formats: "- Question:" and numbered "1."
+
+    # Format 1: Match patterns like "- Question: [text]"
+    question_pattern_dash = r'-\s*Question:\s*(.+?)(?=\n\s*(?:Why needed:|-)|\Z)'
+
+    for match in re.finditer(question_pattern_dash, section_content, re.MULTILINE | re.DOTALL):
         question = match.group(1).strip()
         # Clean up multi-line questions
         question = ' '.join(question.split())
         questions.append(question)
+
+    # Format 2: If no questions found with "- Question:" format, try numbered format
+    if not questions:
+        # Match numbered questions (1., 2., etc.)
+        question_pattern_num = r'^\d+\.\s*(.+?)(?=\n\d+\.|\Z)'
+
+        for match in re.finditer(question_pattern_num, section_content, re.MULTILINE | re.DOTALL):
+            question = match.group(1).strip()
+            # Clean up multi-line questions
+            question = ' '.join(question.split())
+            questions.append(question)
 
     return questions
 
@@ -196,6 +210,11 @@ def parse_user_feedback_for_answers(
     If user provides structured answers (numbered), map them.
     Otherwise, treat entire feedback as answer to all questions.
 
+    Supports multiple numbering formats:
+    - "1. answer" (period after number)
+    - "1/ answer" (forward slash after number)
+    - "1 answer" (space after number)
+
     Args:
         user_feedback: User's feedback text
         questions: List of questions that were asked
@@ -214,17 +233,33 @@ def parse_user_feedback_for_answers(
     if not user_feedback or not questions:
         return {}
 
-    # Check if user provided numbered answers
-    numbered_pattern = r'^\d+\.\s*(.+?)(?=\n\d+\.|\Z)'
-    matches = list(re.finditer(numbered_pattern, user_feedback, re.MULTILINE | re.DOTALL))
+    # Try different numbering patterns (in order of specificity)
+    patterns = [
+        r'^\d+\.\s+(.+?)(?=^\d+\.|\Z)',     # 1. answer (most common)
+        r'^\d+/\s*(.+?)(?=^\d+/|\Z)',       # 1/ answer
+        r'^\d+\s+(.+?)(?=^\d+\s+|\Z)',      # 1 answer (least specific, try last)
+    ]
 
-    if matches and len(matches) == len(questions):
-        # User provided structured answers
+    matches = None
+    for pattern in patterns:
+        test_matches = list(re.finditer(pattern, user_feedback, re.MULTILINE | re.DOTALL))
+        if test_matches and len(test_matches) >= len(questions):
+            matches = test_matches
+            break
+
+    if matches and len(matches) >= len(questions):
+        # User provided structured answers (possibly more than questions)
+        # Extract answers by number to match question indices
         answers = {}
-        for idx, match in enumerate(matches):
-            answer = match.group(1).strip()
-            answer = ' '.join(answer.split())  # Clean whitespace
-            answers[idx] = answer
+        for idx in range(len(questions)):
+            if idx < len(matches):
+                answer = matches[idx].group(1).strip()
+                answer = ' '.join(answer.split())  # Clean whitespace
+                answers[idx] = answer
+            else:
+                # Fallback if somehow we don't have enough matches
+                cleaned_feedback = ' '.join(user_feedback.split())
+                answers[idx] = cleaned_feedback
         return answers
     else:
         # Treat entire feedback as answer to all questions

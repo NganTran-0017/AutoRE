@@ -1,0 +1,32 @@
+{
+  "pred Next": [
+    0
+  ],
+  "fact DelegationClearance": [
+    1
+  ],
+  "fact NormalModeFIFO": [
+    7
+  ],
+  "fun firstPendingFIFO": [
+    8,
+    11,
+    19
+  ],
+  "pred precedes": [
+    9,
+    10,
+    10,
+    12,
+    13
+  ],
+  "fun precedes": [
+    14,
+    15,
+    16,
+    20
+  ],
+  "sig Request": [
+    18
+  ]
+}

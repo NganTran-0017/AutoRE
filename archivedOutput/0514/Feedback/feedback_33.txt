@@ -1,0 +1,88 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples
+- Predicates: Satisfiable
+- Instances: Meaningful (but with degenerate/vacuous cases)
+- Vacuity: Possible
+- Overall: Incomplete
+
+=== CONVERGENCE_RECOMMENDATION ===
+Status: FALSE
+Reasoning: User requests incremental run statements for requirements, and further constraints for scenario coverage (e.g., cross-clearance users, pre-Emergency delegations). Counterexamples and possible vacuity indicate not all requirements are yet fully verified or covered. Additional refinement is needed.
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+1. Maintain and extend incremental run statements for each requirement, supporting stepwise analysis and gradual strengthening (e.g., first all requirements, then add cases for multi-clearance users, pre-Emergency delegation, etc.).
+2. For each State, explicitly model:
+   - A list/set of requests sent at that state (State.sentRequests).
+   - A list/set of requests processed at that state (State.processedRequests).
+   Update predicates and facts to use these explicit fields.
+3. Enforce that every processed Request must be either approved or denied, and record the exact user (approver/denier) who processed it.
+4. Remove the possibility of "orphan" Requests: constrain all Request atoms to be referenced in at least one State's sentRequests or processedRequests.
+5. Implement a global fact enforcing ClearanceLevel ordering: High > Medium > Low, as this is now confirmed as a universal business requirement (no exceptions).
+6. (Optional, but recommended) Ensure all Requests in any State's sentRequests or processedRequests have a valid classification and user.
+
+=== ASSUMPTIONS REVIEW ===
+- Reduce: Eliminate the assumption that Requests can exist without being in any State's sentRequests or processedRequests.
+- Keep: Strict ClearanceLevel ordering of High > Medium > Low (now confirmed universal).
+- Confirm: All Requests must be processed (approved/denied) and the processor must be auditable (i.e., a user is recorded for every processed Request).
+- Confirm: Continue to cover Emergency mode, mutual exclusion, and delegation scenarios.
+- Keep: Incremental run statements for each requirement for modular analysis.
+
+=== STRONGER CHECKS ===
+1. Add assertions to check that every Request atom is referenced in some State's sentRequests or processedRequests:
+   ```
+   assert assertAllRequestsTracked {
+       all r: Request | some s: State | (r in s.sentRequests or r in s.processedRequests)
+   }
+   ```
+2. Add assertion: a Request's approvalStatus (Approved/Denied) implies it appears in some State's processedRequests and has an associated user:
+   ```
+   assert assertRequestProcessingCompleteness {
+       all r: Request |
+         (r.approvalStatus in (Approved + Denied)) =>
+           (some s: State | r in s.processedRequests) and some r.approvedOrDeniedBy
+   }
+   ```
+3. Assert the strict ClearanceLevel ordering:
+   ```
+   assert assertClearanceLevelOrdering {
+       ClearanceOrd/First = High and
+       ClearanceOrd/Next[High] = Medium and
+       ClearanceOrd/Next[Medium] = Low
+   }
+   ```
+4. Incrementally add run statements for enhanced scenarios (cross-clearance users, pre-Emergency delegation, Emergency mode ordering).
+
+=== REQUIREMENT_UPDATES ===
+1. Update requirements to specify that each State explicitly records both the requests sent and the requests processed at that State.
+2. Clarify that every Request must be referenced in some State's sentRequests or processedRequests (no "orphan" Requests).
+3. State explicitly: Request processing is always approve or deny, and the system must record the user who processed each Request.
+4. Require that ClearanceLevel ordering (High > Medium > Low) is strict and universal for all verification and business scenarios.
+5. Require incremental verification: each requirement must have its own run statement to facilitate stepwise analysis and targeted scenario exploration.
+
+=== USER QUESTIONS ===
+1. Should processedRequests and sentRequests be modeled as disjoint sets within each State, or can a Request appear in both for audit purposes?
+2. Are there scenarios where a Request could transition from sent to processed in the same State, or is processing always in a subsequent State?
+3. Is it possible for a Request to be re-processed (e.g., re-evaluated or appealed), or is each Request processed only once per lifecycle?
+
+=== HANDOFF TO RE ===
+1. Update the model to explicitly represent State.sentRequests and State.processedRequests; ensure both are maintained per State.
+2. Remove "orphan" Requests by enforcing that every Request is referenced in at least one State (sent or processed).
+3. Add facts and assertions to guarantee that all processed Requests have an approvalStatus and are attributed to a processing user.
+4. Enforce strict global ordering: ClearanceLevel must always be High > Medium > Low.
+5. Maintain incremental run statements for each requirement to support modular and stepwise verification.
+6. Update requirements documentation to clarify the above modeling structures, processing constraints, and ordering invariants.
+7. Seek user confirmation on edge cases (e.g., disjointness of sent/processed, request re-processing).
+```
+
+[LESSON]: User prefers modular, incremental verification with clear scenario-by-scenario strengthening—always retain incremental run statements and structure model to support stepwise analysis.
+
+[EVENT]: User clarified State should explicitly separate sent and processed requests; adjusted feedback to require State.sentRequests and State.processedRequests, and updated all related facts, checks, and requirements accordingly.
+
+[EVENT]: User confirmed ClearanceLevel ordering as a strict, universal business rule; removed all allowance for organizational exceptions to this ordering in feedback and requirements.
+
+=== FINAL CONVERGENCE ===
+False
+

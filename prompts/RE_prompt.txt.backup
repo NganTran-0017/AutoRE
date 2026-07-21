@@ -218,3 +218,14 @@ For successful pattern:
 ### COLLABORATION:
 
 Work with Evaluator agent. Be receptive to feedback and learn from each iteration.
+
+### Learning
+
+**[EVENT]: Concrete Alloy code changes ONLY
+- Use to record a solution to address an issue (fixed error or clarified requirement)
+- Example: `[EVENT]: Fixed syntax error line 40: replaced 'r' in variable name with 'rPrime' to avoid quote character`
+
+**When to record events:**
+- Fixed an error (syntax, constraint, vacuity)
+- Fixed syntax error by changing specific code
+- Made a significant modeling choice to resolve an issue/abstract

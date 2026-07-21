@@ -1,0 +1,217 @@
+#1. ErrorNormalizer — step 1 of the new post-analysis chain
+
+  New file src/utils/error_normalizer.py — a deterministic (non-LLM) component that converts the primary raw Alloy error into a stable, location-independent signature. It:
+
+  1. Classifies issue_kind / error_type / message_family / root_error_family via an ordered rule table matching your examples (possible tokens here → delimiter_or_block_structure_error,
+  this must be an integer expression → invalid_operator_for_signature_ordering, name "X" cannot be found → missing_declaration_or_scope_error, has type X but expected Y → type_mismatch,
+  arity/join → relation_arity_or_join_error), with syntax/type fallbacks.
+  2. Resolves affected construct + symbol by first parsing the analyzer's already-computed CODE CONTEXT - COMPLETE BLOCK: header, falling back to a backward search over the model file.
+  3. Derives model_region (declaration line vs function_body/predicate_body/import/…), nearby_token (token at the error column), and expected_token_family.
+  4. Builds normalized_signature (no line/column) and returns the JSON schema you specified.
+
+  Wiring: instantiated in workflow.py __init__ and triggered in _step4_evaluate_model right after the analyzer result is received; the JSON is stored on the current iteration's
+  regression-log entry via a new error_signature field (RegressionLogEntry, with to_dict/from_dict + back-compat for old logs).
+
+  Verified against your reference example — output matches exactly except my last signature component keeps the _error suffix (…delimiter_or_block_structure_error vs your
+  …delimiter_or_block_structure). Also note the earlier ambiguity: your prose lists message_family as the signature's tail field, but your example's tail is the root_error_family value — I
+  followed the example. Both are one-line changes if you want them adjusted.
+
+  Reuse / avoiding codebase bloat (your two follow-ups)
+
+  - The backward block-search I first wrote duplicated AlloyExecutor._find_containing_block. I extracted that into a shared module-level find_containing_block(...) in alloy_executor.py;
+  the executor method now delegates to it (its ~75-line body reduced to a one-line call), and ErrorNormalizer reuses the same function instead of its own search.
+  - Per your second note, I added open to the shared BLOCK_KEYWORDS default, so find_containing_block itself now treats open statements as containing blocks (benefiting both the analyzer's
+  snippet extraction and the normalizer). Confirmed: an error on open util/ordering[State] now resolves to that statement rather than an unrelated block above it.
+
+  All four modified files compile, the regression-log field round-trips, and the shared finder passes checks for open/sig/pred blocks.
+
+  #2. IssuePatternTracker (step 2 of 4) is implemented and wired in.
+
+  Summary
+
+  New file src/utils/issue_pattern_tracker.py — deterministic, mirrors the ErrorNormalizer style. It compares the current error_signature against a 6-iteration window through the three levels (exact → root-family → related-region) and emits the exact dict you specified plus a pattern_type.
+
+  Classification uses set membership (which iterations match) and two order-sensitive signals — consecutive_exact (unbroken run ending at N-1) and is_alternating (A,B,A,B) — because those are what separate persisted from plateau from recurring from loop. Priority order: resolved_or_progressed → repair_plateau → same_error_persisted → alternating_error_loop →
+  recurring_same_error → same_root_area_changed → new_issue.
+
+  Verified against your Issue 1: iterations 8/10/12=A, 9/11=B → iter 12 correctly classifies as alternating_error_loop with matched_exact_iterations=[8,10], repeat_count_exact=2. All seven
+  categories pass their scenario tests.
+
+  Wiring: instantiated in workflow.py __init__, called in _step4 immediately after ErrorNormalizer, result stored on the entry's new issue_pattern field (added to RegressionLogEntry with to_dict/from_dict + back-compat for old logs).
+
+  Design notes / decisions worth confirming:
+  - repeat_count_exact = prior exact matches (0 on first occurrence, matching your template default); repeat_count_root_family is the superset (exact + root-only), always ≥ exact. The two matched-iteration lists are disjoint.
+  - plateau_consecutive=3 (⇒ 4 identical in a row) and window=6 are constructor args, so RepairPlateauDetector (step 4) can own the real plateau decision — this step just labels. Say the word if you'd rather plateau be decided solely downstream and have this step cap at recurring_same_error.
+
+  ---
+
+  Detailed explanation — IssuePatternTracker and its pattern-detection logic
+
+  Purpose: Where ErrorNormalizer answers "what is this error?" (a single-iteration, stable signature), IssuePatternTracker answers "have we seen this error before, and how is it behaving over time?" It is the memory/trend layer: it looks back across recent iterations and labels the current error's behavior so downstream steps (ResolutionStatusTracker,RepairPlateauDetector) and the human reader can tell progress from spinning-in-place.
+
+  Inputs / outputs
+  - Input: the current iteration id, the current iteration's error_signature dict (from ErrorNormalizer, or None when the model is clean), and the full list of regression-log entries
+    (each of which may carry its own error_signature for its iteration).
+  - Output (stored on the entry as issue_pattern):
+      {
+        "matched_exact_iterations": [],          # window iters with the SAME normalized_signature
+        "matched_root_family_iterations": [],    # window iters with the same root_error_family but a DIFFERENT signature
+        "repeat_count_exact": 0,                 # number of PRIOR exact matches (0 on first sighting)
+        "repeat_count_root_family": 0,           # exact + root-only prior matches (always ≥ repeat_count_exact)
+        "pattern_type": ""                       # one of the seven categories below
+      }
+
+  The window
+  Only iterations in [N-6, N-1] are considered (window=6). Iterations outside the window, and iterations with no error (error_signature=None), never appear in the matched lists — but a no-error iteration inside the window still matters because it breaks "consecutive" and "alternating" runs (see below).
+
+  The three match levels (each a strict widening of the previous)
+  1. Exact — same normalized_signature. This is the whole ErrorNormalizer key: issue_kind:error_type:affected_construct:affected_symbol:model_region:root_error_family. Two errors match exactly only if they are the same kind of error, on the same construct/symbol, in the same region, from the same root family. Line/column are deliberately excluded, so an error that
+     merely shifts a few lines still matches.
+  2. Root-family — same root_error_family but a different signature. This catches "same underlying cause, different surface symptom" (e.g. the fix turned a missing-brace into a wrong-token, both delimiter_or_block_structure_error). These go into matched_root_family_iterations, kept DISJOINT from the exact list so each list is independently meaningful.
+  3. Related-region — same affected_construct:affected_symbol (falling back to model_region when the symbol is "unknown"), different root family. This is locality only: "errors keep landing in fun leq even though the cause changed." It is not surfaced as its own list; it only influences the new_issue vs same_root_area_changed decision.
+
+  The two order-sensitive signals
+  Set membership alone cannot tell "stuck" from "came back" from "oscillating" — those depend on ORDER. So two extra signals are computed:
+  - consecutive_exact: how many iterations immediately before N (N-1, N-2, …) carry the exact same signature, counting backward until the run breaks (a differing signature, a no-error
+    iteration, or a missing entry all break it). consecutive_exact=1 means "same as last iteration"; a long run means "identical for several iterations straight."
+  - is_alternating: true when current == signature(N-2) AND current != signature(N-1) (both present). If signature(N-3) exists it must equal signature(N-1) (the other phase) to
+    strengthen confidence; if N-3 is absent, a 3-point A-B-A is accepted tentatively. This is exactly the A,B,A,B loop from Issue 1.
+
+  Classification (first matching rule wins)
+  The rules are ordered from most-specific/most-severe to most-generic so that, e.g., an oscillation is never mislabeled as a generic recurrence:
+  1. no current error                              → resolved_or_progressed   (the error was fixed or the model moved past it)
+  2. consecutive_exact ≥ plateau_consecutive (3)   → repair_plateau           (4+ identical in a row: repeated repair attempts are not working)
+  3. consecutive_exact ≥ 1                          → same_error_persisted     (the exact same error carried over from the immediately previous iteration)
+  4. an exact match exists earlier AND is_alternating → alternating_error_loop (bouncing between two errors, e.g. fixing A reintroduces B and vice-versa)
+  5. an exact match exists earlier (with a gap)    → recurring_same_error      (an old error the pipeline thought was gone has come back)
+  6. no exact match, but a root-family or region match → same_root_area_changed (same cause/area, different specific error — usually partial progress)
+  7. nothing matches                               → new_issue                (genuinely first time this error/area is seen in the window)
+
+  Why these levels/thresholds fit the data we have
+  The regression log only reliably gives us, per iteration: the normalized signature, its root family, the affected construct/symbol/region, and whether the iteration had an error at
+  all. The three levels map one-to-one onto those fields (signature → root family → construct/symbol/region), so every decision is backed by a field that actually exists and is stable
+  across line shifts. The order-sensitive signals reuse the same fields but walk them in iteration order, which is the minimum needed to separate the four "repeat" behaviors. window=6
+  and plateau_consecutive=3 are tunable constructor args, so the labeling here stays cheap and deterministic while the actual plateau *decision* (whether to escalate/revert/change
+  strategy) is left to RepairPlateauDetector in step 4.
+
+  Worked example (Issue 1)
+  Signatures by iteration: 8=A, 9=B, 10=A, 11=B, 12=A (A and B are two distinct normalized signatures on fun leq with different root families).
+  At iteration 12: window = 6..11. Exact matches of A = {8, 10} → matched_exact_iterations=[8,10], repeat_count_exact=2. consecutive_exact=0 (iter 11 is B, breaking the run). An exact
+  match exists earlier, and is_alternating holds (current==sig(10), current!=sig(11), sig(9)==sig(11)) → pattern_type = alternating_error_loop. This is precisely the loop the earlier
+  investigation flagged, now detected explicitly instead of being hidden by the resolved_target_issue filter.
+  ---
+
+  #3. SemanticIssueTracker (step 3 of 4) is implemented and wired in.
+
+  New file src/utils/semantic_issue_tracker.py — deterministic, mirrors the IssuePatternTracker style. It is the semantic analogue of steps 1-2: where those track syntax errors, this
+  tracks UNSATISFIABLE PREDICATES and ASSERTION COUNTEREXAMPLES across iterations — the issues that, when persistent, indicate a requirement-level problem (the 0618 run's
+  EmergencyBypassFIFOScenario stayed UNSAT for 9+ iterations with model-only fixes and was never escalated).
+
+  Key concept — "measurable" iterations: an iteration whose model failed to parse (syntax != OK) tells us nothing about whether a semantic issue persists; it neither extends nor breaks a
+  persistence run. Only syntax-OK iterations count. This matters because real runs interleave syntax-error iterations with semantic-issue iterations (0618: syntax error at 17, UNSAT at
+  18-21 — consecutive count is still 4).
+
+  Inputs: current iteration, current VerificationResult, all regression-log entries (their current_result.unsatisfied_predicates / .counterexamples lists, which the executor already
+  populates). Output stored on the entry as semantic_issue_persistence:
+    { "issues": [{name, kind, consecutive, total, iterations, first_seen}], "escalated_issues": [...], "escalation_required": bool }
+  Thresholds (constructor args): consecutive >= 3 measurable iterations OR total >= 4 in a 10-iteration window -> escalation_required.
+
+  Wiring: instantiated in workflow.py __init__, called in _step4 right after IssuePatternTracker; stored on RegressionLogEntry (new field, to_dict/from_dict back-compat).
+
+  Note: the originally planned "ResolutionStatusTracker" role (did the previous target issue get resolved?) was already covered by the existing check_issue_resolved /
+  resolved_target_issue mechanism; step 3 was re-scoped to semantic persistence, which was the actual gap.
+
+  #4. RepairPlateauDetector (step 4 of 4) is implemented and wired in — and the chain is now CONSUMED, not write-only.
+
+  New file src/utils/repair_plateau_detector.py — deterministic. Converts the chain's classifications into escalation decisions plus data-only "directive" evidence blocks that are
+  injected into the agents' prompts. Facts live in Python; the behavioral rules live in the prompt files (project convention: no hardcoded prompts in Python).
+
+  build_syntax_escalation(iteration, issue_pattern, error_signature, entries) maps pattern_type to a strategy:
+    same_error_persisted      -> level 1 FORBID_PRIOR_FIXES
+    recurring_same_error      -> level 2 BREAK_OSCILLATION
+    alternating_error_loop    -> level 2 BREAK_OSCILLATION (directive names the oscillation-partner signature from the N-1 entry)
+    repair_plateau            -> level 3 REWRITE_BLOCK (rewrite_block=True)
+  The directive lists: pattern, error signature, affected block, iterations where the same error occurred, and every fix already attempted — both the Evaluator's [FIX INTENT] lines
+  (parsed from stored evaluator_feedback of matched iterations) and the RE agent's applied fix_intent (from the entry at matched_iteration+1, since iteration i's fix is applied when
+  creating iteration i+1's model).
+
+  build_semantic_escalation(iteration, semantic_persistence, entries) -> level 3 REQUIREMENTS_DIAGNOSIS when escalation_required, with a per-issue evidence block (occurrence counts,
+  iterations, attempted fixes).
+
+  Consumption (this is what makes steps 1-4 change behavior):
+  - Evaluator, syntax path: workflow _step5_6 builds the escalation, stores it on entry.repair_escalation, and passes the directive as pattern_status to
+    GenerateSyntaxRepairInstruction (all three call sites, incl. the user-guidance variant). Both syntax-repair prompt sections gained a "CROSS-ITERATION ERROR PATTERN STATUS" block
+    with binding STRATEGY RULES (FORBID_PRIOR_FIXES: all listed fixes forbidden; BREAK_OSCILLATION: one change resolving both errors; REWRITE_BLOCK: no more local patches — instruct a
+    from-scratch rewrite of the affected block). The failed-attempt loading in the retry loop now also unions the IssuePatternTracker's matched iterations (location-independent) with
+    the symbol-based index.
+  - Evaluator, semantic path: when escalated, the new [SECTION: PersistentIssueEscalation] is appended to the GenerateSemanticFeedback prompt (same mechanism as
+    QAContextReuseAndUpdate). It makes "escalate to requirement clarification" mandatory for the escalated issues and requires a full diagnosis in the EXISTING feedback sections
+    (=== POTENTIAL REQUIREMENT ISSUES ===: classification inconsistency/ambiguity/gap + evidence + minimal conflicting requirement set / ambiguous text + interpretations;
+    === REQUIREMENT UPDATES ===: the concrete replacement wording, which _step7 already feeds into the English requirements). Model-overconstraint is the justified exception routed to
+    REPAIR INSTRUCTIONS. Forbidden: repeating attempted fixes, converting failing assertions to facts, "keep fix" without diagnosis. RefineFeedback is instructed to preserve the
+    diagnosis through user review; the anti-assert-masking rule was also added to the always-on DECISION POLICY.
+  - RE agent: _step8 reads the previous iteration's entry.repair_escalation and passes the directive to UpdateAlloyModel as escalation_directive; UpdateAlloyModel_Base renders it, and
+    Mode1 gained an ESCALATION OVERRIDE (REWRITE_BLOCK lifts the minimal-change constraint for the named block only; listed fixes may not be re-applied) while Mode2's Forbidden Changes
+    gained the same re-apply/assert-masking prohibitions.
+
+  Verified by test/test_escalation_chain.py (0618 replay -> escalation fires at 3rd persistent iteration; plateau -> REWRITE_BLOCK; A-B-A-B -> BREAK_OSCILLATION; no premature
+  escalation; entry round-trip incl. old logs; all modified prompt templates render). Existing regression-log test suites still pass.
+
+  #5. Semantic diagnostics — rungs 2-3 of the semantic escalation ladder (scope/trace sweep + fact localization).
+
+  New file src/utils/semantic_diagnostics.py — deterministic and LLM-free. When a predicate stays UNSAT past the SemanticIssueTracker thresholds, the Analyzer now answers empirically
+  BEFORE the Evaluator is forced into requirements diagnosis:
+
+  - Rung 2, scope sweep: the stuck predicate's run command is isolated (all other run/check commands commented out with a //DIAG marker) and re-run with every bound in its scope clause
+    doubled (capped at 16; " for 8" appended if unbounded). SAT at the larger scope proves the "persistent UNSAT" was a bounded-search artifact — the correct action is scope
+    adjustment, not a requirements escalation — and rung 3 is skipped.
+  - Rung 3, fact localization (greedy delta debugging): starting from all facts disabled (if STILL UNSAT -> verdict internal_contradiction: the conflict is inside the predicate body or
+    signature declarations), each fact is tentatively disabled; facts whose absence leaves the predicate UNSAT are exonerated. What remains is a 1-minimal blocking fact set. Because
+    constructs are R-prefixed (fact R1R2_...), the set maps directly to requirement IDs — the directive carries a PROVEN minimal conflict set instead of LLM guesses. Budget:
+    max 12 runs/predicate, max 2 predicates (excess reported as "diagnosis capped"); budget exhaustion or failed variants mark the result approximate (facts kept conservatively).
+
+  Every Alloy run goes through an injected check(model_text, predicate) -> True(SAT)/False(UNSAT)/None(variant failed) callable, so the logic is unit-testable without Alloy;
+  make_alloy_sat_checker is the production adapter (writes diag_N.als variants, runs AlloyExecutor, reads unsat_run_commands/has_results).
+
+  Wiring: Workflow._run_semantic_diagnostics, called inside the level-3 semantic escalation branch of _step5_6 (before the entry is saved). It filters escalated issues to kind
+  unsat_predicate (counterexamples are not diagnosable by these rungs), appends the rendered "DETERMINISTIC DIAGNOSIS" evidence block to the escalation directive, and stores raw
+  results as repair_escalation['diagnostics']. Best-effort: any failure (e.g. missing Alloy jar) logs and leaves the escalation unchanged.
+
+  Prompt rules (facts in Python, behavior in prompts): the PersistentIssueEscalation section now instructs — SAT-at-enlarged-bounds exempts that issue from the mandatory diagnosis
+  (decision MUST be adjust scope/trace and rerun with the swept bounds); a proven blocking set must ground the diagnosis in exactly those requirement IDs (measured beats hypothesized);
+  internal_contradiction routes to the model-overconstraint exception unless the predicate transcribes requirement text.
+
+  Bug fixed while testing: enlarge_run_scope doubled EVERY digit on the run line, mangling digit-bearing predicate names (run R1R2_Conflict for 4 -> run R2R4_Conflict for 8); it now
+  rewrites only the scope clause after `for`.
+
+  Verified by test/test_semantic_diagnostics.py (15 tests: extraction/disable/isolate helpers, scope enlargement incl. the name-mangling regression, minimal-pair localization in 4
+  runs, internal contradiction, budget exhaustion -> approximate, failed variants kept conservatively, artifact short-circuits rung 3, directive rendering, adapter SAT/UNSAT/None
+  mapping). test_escalation_chain.py still passes (prompt renders).
+
+  #6. Requirement-change decision gate + targeted regeneration — rung 5 of the semantic escalation ladder (ladder complete).
+
+  The gate rides the EXISTING _step5_6 user-review interaction rather than adding a new prompt: when a level-3 semantic escalation fired and the draft feedback contains
+  === REQUIREMENT UPDATES ===, a banner prints the proposed update(s) and the single review input doubles as the decision. classify_gate_decision (repair_plateau_detector.py,
+  deterministic) maps it: bare accept/yes/ok -> accepted; bare reject/no -> rejected (bare keywords are consumed by the gate, NOT sent to RefineFeedback); any substantive text ->
+  edited (flows through RefineFeedback as before, treated as approval with modifications); empty/timeout -> provisional.
+
+  Enforcement — Workflow._apply_requirement_gate, called in BOTH the refine and draft paths before the final feedback is stored:
+  - rejected: remove_requirement_updates deterministically strips the === REQUIREMENT UPDATES === section (header to next === header or EOF; singular/plural variants) so
+    _step7_update_requirements cannot apply it regardless of LLM behavior; the rejection is stored as a confirmed QARecord for future retrieval. Escalation stays at level 3.
+  - accepted / edited / provisional: the decision is stored as a QARecord (timeout -> status provisional, source agent_assumption, per the agreed design), and
+    build_regeneration_escalation overwrites entry.repair_escalation with a level-5 REGENERATE_PREDICATES escalation. Regeneration targets = the escalated predicates PLUS the proven
+    blocking facts from the rung-3 diagnosis when one exists; the directive lists the user decision, the targets, the implicated requirement IDs, and the approved update text
+    (facts only - rules live in the prompts).
+
+  Consumption: _step8 carries the previous iteration's escalation as before; REGENERATE_PREDICATES was added to the strategies that get the LATEST REQUIREMENTS attached, and
+  RE_prompt.txt Mode2 gained an ESCALATION OVERRIDE rule - DELETE each listed construct and rebuild it from the UPDATED requirements document (not from the old text, which resisted
+  repair), preserving names/parameters unless feedback says otherwise, focused-change constraint lifted for the listed constructs and their call sites only, regenerated constructs
+  must encode exactly the implicated requirements as now worded.
+
+  Verified by test/test_requirement_gate.py (5 tests: keyword/timeout/edited classification incl. "no, but change R3 too" -> edited; section stripping incl. last-section and
+  singular-header variants and absent-section no-op; regeneration escalation with/without rung-3 diagnostics; edited/provisional directive wording). Escalation-chain and
+  semantic-diagnostics suites still pass.
+
+  Known cosmetic quirk: a bare "accept" skips RefineFeedback and uses the draft as final, so the console prints "No user feedback provided" after the decision line.
+
+  Remaining on this ladder: live-run validation only — rungs 2-3 and 5 have never been exercised against a real Alloy/LLM run.

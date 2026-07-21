@@ -25,12 +25,27 @@ class ArtifactStore:
         self.analyzer_results: Dict[int, Dict[str, Any]] = {}
         self.evaluations: Dict[int, str] = {}
         self.feedback: Dict[int, str] = {}
+        self.feedback_action_type: Dict[int, str] = {}  # Track which action generated the feedback
         self.pending_questions: Dict[int, List[str]] = {}  # Questions from InterpretResults
+        self.original_requirements: Optional[str] = None  # immutable source input
 
     # Requirements
     def store_requirements(self, iteration: int, content: str):
         """Store requirements document for iteration."""
         self.requirements[iteration] = content
+
+    def store_original_requirements(self, content: str):
+        """Store the original input requirements (immutable ground truth).
+
+        Write-once: subsequent calls are ignored so nothing in the workflow
+        can ever overwrite the source the drift checks anchor to.
+        """
+        if self.original_requirements is None and content:
+            self.original_requirements = content
+
+    def get_original_requirements(self) -> Optional[str]:
+        """Get the original input requirements (None if not captured)."""
+        return self.original_requirements
 
     def get_requirements(self, iteration: int) -> Optional[str]:
         """Get requirements for specific iteration."""
@@ -45,7 +60,16 @@ class ArtifactStore:
 
     # Alloy Models
     def store_alloy_model(self, iteration: int, content: str):
-        """Store Alloy model for iteration."""
+        """
+        Store Alloy model for iteration, extracting only the code from markdown fences if present.
+        
+        This ensures that repair instructions (=== FIX INTENT === etc.) are not included
+        in the stored model that gets shown to the Evaluator.
+        """
+        from .alloy_model_validator import extract_alloy_code
+
+        content = extract_alloy_code(content, strip_generic_fence=True)
+
         self.alloy_models[iteration] = content
 
     def get_alloy_model(self, iteration: int) -> Optional[str]:
@@ -92,13 +116,25 @@ class ArtifactStore:
         return self.evaluations[max_iter]
 
     # Feedback
-    def store_feedback(self, iteration: int, feedback: str):
-        """Store user feedback for iteration."""
+    def store_feedback(self, iteration: int, feedback: str, action_type: str = "GenerateSemanticFeedback"):
+        """
+        Store user feedback for iteration.
+
+        Args:
+            iteration: Iteration number
+            feedback: Feedback content
+            action_type: Name of action that generated feedback ("GenerateSemanticFeedback" or "GenerateSyntaxRepairInstruction")
+        """
         self.feedback[iteration] = feedback
+        self.feedback_action_type[iteration] = action_type
 
     def get_feedback(self, iteration: int) -> Optional[str]:
         """Get feedback for specific iteration."""
         return self.feedback.get(iteration)
+
+    def get_feedback_action_type(self, iteration: int) -> Optional[str]:
+        """Get the action type that generated the feedback for this iteration."""
+        return self.feedback_action_type.get(iteration)
 
     # Pending Questions (from InterpretResults for use in GenerateFeedback)
     def store_pending_questions(self, iteration: int, questions: List[str]):

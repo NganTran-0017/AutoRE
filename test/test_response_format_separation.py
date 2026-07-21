@@ -10,7 +10,7 @@ def test_response_format_sections():
     # Test cases: (action_name, expected_section_name)
     test_cases = [
         ("InterpretResults", "ResponseFormatInterpretation"),
-        ("GenerateFeedback", "ResponseFormatFeedback"),
+        ("GenerateSemanticFeedback", "ResponseFormatFeedback"),
         ("UpdateRequirements", "ResponseFormatRequirements"),
         ("RefineFeedback", "ResponseFormatFeedback"),
     ]
@@ -42,10 +42,13 @@ def test_response_format_sections():
             # Create comprehensive variables needed for rendering
             test_vars = {
                 "analyzer_results": "test",
+                "regression_log": "test regression log",
                 "requirements_document": "test requirements",
                 "alloy_model": "test model",
                 "user_preferences": "test prefs",
                 "interpretation": "test interpretation",
+                "failed_fix_history": "None - this is the first attempt.",
+                "relevant_qa": "No relevant prior Q&A pairs found.",
                 "feedback": "test feedback",
                 "draft_feedback": "test draft",
                 "user_review": "test review",
@@ -57,7 +60,7 @@ def test_response_format_sections():
             prompt = pm.render_prompt("Evaluator", action_name, **test_vars)
             
             # Check if the expected format is in the prompt
-            if expected_section == "ResponseFormatInterpretation" and "SYNTAX STATUS:" in prompt:
+            if expected_section == "ResponseFormatInterpretation" and "=== RESULT INTERPRETATION ===" in prompt:
                 print(f"✓ {action_name:25} renders with InterpretResults format")
             elif expected_section == "ResponseFormatFeedback" and "=== VERIFICATION STATUS ===" in prompt:
                 print(f"✓ {action_name:25} renders with Feedback format")

@@ -1,0 +1,60 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples (assertR1, assertR2, assertR3, assertR4_2, assertR4_3)
+- Predicates: Satisfiable
+- Instances: Suspicious (trivial/vacuous cases, incomplete coverage)
+- Vacuity: Possible (assertR3 and Emergency-related properties may pass vacuously)
+- Overall: Incomplete
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+1. Emergency entry: Add a fact or strengthen transition predicates to ensure Emergency mode can only be entered if exactly two Admins are present and both are concurrently triggering the Emergency mode. Prevent Emergency mode entry if fewer than two Admins trigger.
+2. Scope: No need to force two Admins in every instance—ensure predicates and transitions enforce the correct triggering condition regardless of total Admin count.
+3. Emergency termination: Add a liveness constraint to guarantee that Emergency mode always ends and the system returns to Normal mode.
+4. Delegation revocation: Strengthen the transition logic so that all delegations assigned during Emergency are revoked immediately at the Emergency-to-Normal transition.
+5. Mutual exclusion test: Encode a predicate to generate a scenario where at least one user holds two mutually exclusive roles during Emergency. Run this as a targeted test to confirm suspension of mutual exclusion.
+6. Instance diversity: Add constraints or command-specific scopes to generate traces with Emergency entry/exit, nontrivial delegations, revocations, and mutual exclusion suspension, covering all edge cases.
+
+=== ASSUMPTIONS REVIEW ===
+- The model must NOT assume two Admins always exist; it must only enforce that Emergency entry requires two Admins concurrently triggering.
+- Liveness of Emergency termination must be enforced: Emergency must always eventually end.
+- Delegations assigned during Emergency must be revoked immediately upon exit.
+- No assumption about mutual exclusion being present in every run; instead, mutual exclusion suspension must be tested as a scenario via predicate.
+- Scope and initial state flexibility are required; do not hardwire minimum Admins, but enforce the Emergency entry condition.
+
+=== STRONGER CHECKS ===
+1. Add an assertion and a predicate to test the scenario where a user holds two mutually exclusive roles during Emergency.
+2. Add an assertion to verify that, after Emergency, only roles delegated during Emergency are revoked, and no others are affected.
+3. Add a negative test/assertion: verify that Emergency cannot be entered if fewer than two Admins trigger Emergency mode.
+4. Add a liveness assertion or temporal check to force Emergency-to-Normal transition in every trace.
+5. Add an assertion to ensure that credential update requirements after Emergency apply only to the two Admins who triggered Emergency.
+
+=== REQUIREMENT_UPDATES ===
+1. Clarify that Emergency mode entry requires two Admins concurrently triggering; there is no requirement for two Admins to always exist.
+2. State explicitly that Emergency mode must always terminate and the system must return to Normal mode (liveness).
+3. Specify that roles delegated during Emergency must be revoked immediately at the Emergency-to-Normal transition; delayed revocation is not permitted.
+4. Clarify that mutual exclusion suspension should be tested as a specific scenario, not assumed in every run.
+5. Credential update requirements after Emergency apply only to the two triggering Admins.
+
+=== USER QUESTIONS ===
+1. Confirm that the model should only prevent Emergency entry if fewer than two Admins are available to trigger it—no minimum Admin count is required otherwise.
+2. Confirm that mutual exclusion suspension is to be tested as a dedicated scenario via predicate, not required in every trace.
+3. Confirm that all delegations assigned during Emergency must be revoked immediately when Emergency ends.
+4. Confirm that Emergency mode must always eventually end (liveness).
+5. Confirm that credential update requirements after Emergency apply only to the two triggering Admins, not to others.
+
+=== HANDOFF TO RE ===
+1. Update requirements and model to specify that Emergency entry requires two Admins concurrently triggering, not a persistent minimum Admin count.
+2. Enforce in the model that Emergency can only be entered with two triggering Admins and cannot be entered otherwise.
+3. Add/strengthen model constraints to guarantee Emergency is always eventually exited (liveness).
+4. Enforce immediate revocation of all delegations assigned during Emergency upon return to Normal.
+5. Encode and test the mutual exclusion suspension scenario via predicate to ensure meaningful coverage.
+6. Ensure credential update requirements post-Emergency apply only to the two triggering Admins.
+7. Review and align requirements and model with all above clarifications.
+```
+
+[LESSON]: User feedback clarified distinction between operational preconditions (Emergency entry requires two Admins) and system invariants (no need for persistent Admin minimum); this distinction should guide modeling constraints versus scope assumptions.
+
+[EVENT]: Detected vacuity in mutual exclusion checks; user clarified suspension is to be tested as a specific scenario, not required in every trace; solution: encode as predicate and run targeted check.
+

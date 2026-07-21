@@ -1,0 +1,76 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples
+- Predicates: Satisfiable
+- Instances: Meaningful
+- Vacuity: None
+- Overall: Incomplete
+
+=== CONVERGENCE_RECOMMENDATION ===
+Status: FALSE
+Reasoning: User review clarified policy for expiry/revocation and requested strictly no exceptions. Counterexamples remain, and all scenario coverage must be enforced. Model and requirements both need refinement to guarantee behaviors per clarified rules.
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+1. Emergency Mode Coverage (assertEmergencyModeOccurs):
+   - Add a global fact or ensure All_Requirements includes: some s: State | s.mode = Emergency.
+   - Confirm that Emergency mode is exercised in every scenario/run.
+
+2. Mutual Exclusion in Normal Mode (assertMutExRolesNeverHeldInNormal):
+   - Strengthen R6 and/or add a fact: no user holds two mutually exclusive roles (by assignment or delegation) in any State where mode = Normal.
+   - Ensure allRolesHeld[u, s] covers both assigned and delegated roles.
+
+3. EmergencyPrivilege Revocation (assertEmergencyPrivilegeRevokedAfterEmergency):
+   - In R4/R4.1 and as a global fact: every EmergencyPrivilege must be revoked exactly at the first Normal state after Emergency ends.
+   - Add: all ep: EmergencyPrivilege | ep.revokedAt = firstNormalAfter(ep.grantedAt).
+   - Ensure s.emPrivs is empty in every Normal state.
+
+4. Delegation Expiry after Emergency (assertNoEmergencyDelegationWithLateExpiry):
+   - Globally enforce: any delegation granted during Emergency must expire exactly at the first Normal state after Emergency, never after.
+   - Add: all d: Delegation | d.grantedAt.mode = Emergency implies d.expiresAt = firstNormalAfter(d.grantedAt).
+
+5. Self-Delegation Prohibition (assertNoSelfDelegation):
+   - Move all d: Delegation | d.delegator != d.delegatee to a global fact to enforce as a system invariant.
+
+=== ASSUMPTIONS REVIEW ===
+- Keep: Emergency mode must occur in all verification scenarios for coverage.
+- Keep: Mutual exclusion is enforced in Normal mode for all roles held (assignment or delegation); suspended only during Emergency.
+- Keep: Delegations granted in Emergency must expire at the first Normal state after Emergency, never after or before.
+- Keep: EmergencyPrivilege must be revoked at the first Normal state after Emergency.
+- Confirm: Self-delegation is always forbidden.
+- User clarified: No exceptions to the above.
+
+=== STRONGER CHECKS ===
+1. Add facts or assertions to:
+   - Guarantee Emergency mode is exercised in every verification scenario.
+   - Ensure delegations granted during Emergency cannot have expiresAt after the first Normal state following Emergency.
+   - Ensure EmergencyPrivilege is always revoked at the first Normal state after Emergency and cannot persist beyond it.
+2. Add negative assertion: No EmergencyPrivilege may be granted outside Emergency mode.
+3. Assert: No user can hold both roles of a mutually exclusive pair in Normal mode (assignment or delegation).
+
+=== REQUIREMENT_UPDATES ===
+1. Revise R4.1 and R4.4: EmergencyPrivilege must be revoked explicitly and immediately at the first Normal state after Emergency ends and must not persist beyond that state.
+2. Update R4.2a: Any delegation granted during Emergency mode must expire exactly at the first Normal state after Emergency, without exception.
+3. Make the prohibition of self-delegation an explicit system invariant.
+4. Clarify R6: Mutual exclusion applies to all roles held (assignment or delegation) in Normal mode; suspended only during Emergency.
+5. Explicitly require Emergency mode coverage in all verification scenarios for coverage purposes.
+
+=== USER QUESTIONS ===
+None outstanding; user clarified that expiry/revocation must always happen at the first Normal state after Emergency with no exceptions.
+
+=== HANDOFF TO RE ===
+1. Update requirements (R4, R4.1, R4.2a, R4.4, R6) to explicitly require timely revocation of EmergencyPrivilege and expiry of Emergency delegations at the first Normal state after Emergency, with no exceptions.
+2. Enforce self-delegation prohibition as a system invariant.
+3. Move strengthened constraints from assertions into global facts or requirement predicates.
+4. Guarantee Emergency mode coverage globally in all verification runs.
+5. Clarify mutual exclusion applies to all roles held (assignment or delegation) in Normal mode.
+6. Requirements and model must reflect clarified, exception-free policy per user review.
+```
+
+[LESSON]: Direct user clarifications on policy (e.g., "no exceptions") enable stronger, unambiguous system invariants and removal of edge-case questions from the feedback.
+[EVENT]: User clarified EmergencyPrivilege and delegation expiry must strictly occur at the first Normal state after Emergency; feedback and model recommendations updated to enforce this with no exceptions.
+
+=== FINAL CONVERGENCE ===
+False
+

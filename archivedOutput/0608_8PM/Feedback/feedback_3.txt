@@ -1,0 +1,108 @@
+=== FEEDBACK ===
+### 1. Next Action
+
+**refine/narrow fix**
+
+The fix direction is correct, but the assertion assertMutexPositive is too strong and overstates the requirements. The assertion should be weakened or refactored; all other model elements are behaving as intended.
+
+---
+
+### 2. Concrete Model-Improvement Guidance
+
+#### a. Assertion Correction
+
+- **Weaken assertMutexPositive**: The current assertion improperly requires that in every Emergency state, some user holds a pair of mutually exclusive roles. The requirements only permit this—not require it.  
+  **Action:**  
+  - Remove or comment out the current assertMutexPositive assertion.
+  - Replace it with a *possibility check* using a `run` predicate (NOT an assertion). For example:
+    ```alloy
+    // Predicate: It is possible for a user to hold mutually exclusive roles during Emergency
+    pred MutexPossibleDuringEmergency {
+      some s: State | 
+        s.mode = Emergency and 
+        some u: User, r1, r2: Role | 
+          r2 in r1.mutexWith and 
+          r1 in s.userRoles[u] and 
+          r2 in s.userRoles[u]
+    }
+    run MutexPossibleDuringEmergency
+    ```
+  - This checks that the model admits at least one Emergency state with a user holding mutex roles, matching the intent of R3.2.
+
+#### b. Assertion Suite Update
+
+- **Retain assertMutexNegative** as-is. This properly checks that mutually exclusive roles are never held together in Normal mode.
+- **Optional:** If you want to ensure **no user ever holds mutex roles outside Emergency**, you may add a negative assertion (already present and passing).
+- **Do not** require existence of mutex pairs in all Emergency states.
+
+#### c. Regression Guard
+
+- **Ensure** that the negative mutual exclusion property remains stable:  
+  > In all Normal states, no user ever holds mutually exclusive roles.  
+  This is already enforced and must not regress.
+
+---
+
+### 3. Assumptions to Review
+
+No new assumptions require review. No overconstraint or ambiguity detected in the assumptions for this issue.
+
+---
+
+### 4. Requirement Update Recommendation
+
+**None.**  
+No update to the English requirements is warranted: the requirements correctly state that holding mutex roles is permitted (not required) during Emergency mode. The assertion error was a modeling issue, not a requirements issue.
+
+---
+
+### 5. Q&A Reuse and Update
+
+- No prior Q&A to update or reuse.
+- No open interpretation questions or unresolved issues.
+
+---
+
+### 6. Stronger Verification Checks
+
+- Once the assertion suite is corrected and all hard metrics pass, consider adding edge-case runs or negative checks:
+    - Example: run a predicate to show that holding mutex roles is *impossible* outside Emergency.
+    - Test that the system supports Emergency mode activation/deactivation in all valid user/role configurations.
+- For now, **priority is to correct the mutual exclusion assertion.**
+
+---
+
+### 7. Prioritized Handoff Items for RE
+
+**Critical Blocker:**  
+1. Replace assertMutexPositive with a possibility predicate and corresponding run command as shown above. Remove the universal/existential assertion.
+
+**Important Follow-up:**  
+2. Confirm that all other assertions and global facts remain stable and are not overconstraining the model (no unexpected unsats or vacuity).
+
+**Optional Enhancement:**  
+3. After hard metrics pass, consider additional runs or negative checks for edge cases or rare Emergency transitions.
+
+---
+
+**Summary Table**
+
+| Item                         | Action                                                                 | Priority      |
+|------------------------------|------------------------------------------------------------------------|---------------|
+| assertMutexPositive          | Remove and replace with possibility predicate/run command               | Critical      |
+| assertMutexNegative          | Keep as is                                                             | Must remain   |
+| All other Emergency assertions | Keep as is, ensure stability                                          | Check         |
+| Requirements/Assumptions     | No update needed                                                       | Confirmed     |
+| Stronger verification        | Add after fix, if all checks pass                                      | Optional      |
+
+---
+
+**Next Steps for RE Agent:**  
+- Refactor the model per above and rerun verification.  
+- Submit results for re-evaluation.  
+- Confirm all assertions (except the removed/replaced one) continue to pass.  
+- If all hard metrics pass, proceed with assessment for convergence.
+
+=== FINAL CONVERGENCE ===
+False
+

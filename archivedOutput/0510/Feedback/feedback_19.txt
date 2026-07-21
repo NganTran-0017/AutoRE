@@ -1,0 +1,49 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples (assertR3_MutExScenario_Positive fails)
+- Predicates: Satisfiable (all negative and edge-case predicates return expected results except positive mutual exclusion suspension)
+- Instances: Meaningful (negative cases and post-emergency restoration covered); positive scenario not realized
+- Vacuity: Possible (positive mutual exclusion suspension scenario is UNSAT, so negative checks may be vacuous)
+- Overall: Incomplete
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+1. Move scenario-specific assumptions (e.g., both mutually exclusive roles delegated to the same user in the same Emergency state, any user may be the delegate) out of facts and into scenario predicates. Keep facts to represent stable, system-wide rules and constraints.
+2. Review and, if needed, relax the F_MutualExclusion_EnforcedAndSuspended_Strict fact and any delegation facts, ensuring no global constraints inadvertently block the positive scenario (any user, not just emAdmin, delegated and holds two mutually exclusive roles in the same Emergency state with exactly two emAdmins).
+3. Explicitly encode the scenario in the Scenario_MutualExclusionSuspended_Positive predicate: both mutually exclusive roles delegated to the same user (not necessarily emAdmin), in the same Emergency state, while exactly two emAdmins are present.
+4. Confirm that the minimum clearance rule for delegation is enforced by a fact; ensure it is unchanged and applied system-wide.
+5. Increase the scope (users, roles, states) if needed to ensure the model can realize the extended scenario.
+
+=== ASSUMPTIONS REVIEW ===
+- Mutual exclusion suspension can apply to any user (not just emAdmins) during Emergency mode with exactly two emAdmins.
+- Both mutually exclusive roles must be delegated to the same user in the same Emergency state (not across multiple states).
+- The minimum clearance delegation rule is unchanged; it is enforced by a fact, not by scenario predicates.
+- No additional (unstated) restrictions on delegation during Emergency mode beyond those modeled.
+
+=== STRONGER CHECKS ===
+1. Add an explicit assertion confirming that a user (any user) can hold two mutually exclusive roles, both delegated in the same Emergency state, with exactly two emAdmins present, and that the minimum clearance rule holds.
+2. Add a vacuity check: assert that if mutual exclusion suspension is never realized, negative mutual exclusion predicates are indeed vacuously true.
+3. Increase the scope as needed to ensure that at least one mutually exclusive role pair and enough users exist for the scenario.
+
+=== REQUIREMENT_UPDATES ===
+1. Explicitly state that any user (not just emAdmins) can be delegated and hold two mutually exclusive roles during Emergency mode with exactly two emAdmins.
+2. Clarify that both delegations must occur in the same Emergency state.
+3. Ensure the minimum clearance delegation rule is specified as a persistent system-level rule, unaffected by scenario-specific assumptions.
+4. Add a requirement to ensure the scope includes at least one mutually exclusive role pair and enough users for the scenario to be realized.
+5. State explicitly whether there are any restrictions on multi-role delegation during Emergency mode (or confirm there are none).
+
+=== USER QUESTIONS ===
+1. Confirm that it is permitted for any user (not just emAdmins) to be delegated and hold two mutually exclusive roles during Emergency mode with exactly two emAdmins.
+2. Confirm that both mutually exclusive roles must be delegated to the user in the same Emergency state, not across multiple Emergency states.
+3. Are there any additional (unstated) restrictions on role delegation during Emergency mode (e.g., per-user or per-role limits) that should be modeled, or is the only restriction the minimum clearance rule?
+
+=== HANDOFF TO RE ===
+1. Update requirements to state that any user (not just emAdmins) may be delegated and hold two mutually exclusive roles in Emergency mode, provided both are delegated in the same Emergency state and the minimum clearance rule is met.
+2. Clarify and document (in requirements and model) that the minimum clearance rule is a system-wide constraint, encoded in facts, and scenario-specific delegation assumptions are handled in predicates.
+3. Ensure scope is sufficient to realize the scenario in model runs.
+4. After updating requirements and model constraints, rerun all mutual exclusion suspension checks to confirm positive and negative cases are realized and vacuity is eliminated.
+```
+[LESSON]: User prefers scenario-specific assumptions to be encoded in predicates and requires facts to represent system-wide, unchanged rules—modeling distinctions between global and scenario constraints must be explicit.
+[EVENT]: Counterexample in positive mutual exclusion scenario traced to overconstraining fact; user clarified assumptions and required scenario encoding change; feedback now recommends moving assumptions to predicates and keeping facts for stable rules only.
+

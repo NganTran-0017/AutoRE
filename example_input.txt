@@ -1,21 +1,34 @@
 SYSTEM DESCRIPTION:
-The Role-based Access Control system operates in a multi-user environment and supports role hierarchy, temporary role delegation, revocation of delegated role, and concurrent request processing. The system must preserve authorization correctness, delegation and permission consistency, liveness of request processing, and safety under concurrency.
-Each user in the system is assigned a security clearance level: High, Medium, or Low. Administrators have High clearance level, but not all High-clearance users are Administrators. Users may hold assigned roles or delegated roles, subject to clearance constraints. Users may submit requests for actions, where each action affects one or more system objects, each with a classification level of High, Medium, or Low. The classification of a request is the highest classification of any affected object. Users may submit only requests which have classification levels less than or equal to user clearance. Users with higher clearance may approve or reject requests from lower-clearance users. Requests may be submitted and processed concurrently in FIFO order, and every request is eventually processed.
-Users with higher clearance may temporarily delegate one or more of their assigned roles to a lower-clearance user, provided that the delegate meets the role’s minimum clearance requirement. Delegated roles must expire after a fixed amount of time or be revoked at any time by administrators. 
+The Role-Based Access Control system operates in a multi-user environment with High, Medium, and Low security clearances and supports clearance-constrained role assignment, mutually exclusive role enforcement, temporary role delegation, administrator-controlled revocation, request submission, approval, rejection, and concurrent request processing. The system must preserve authorization correctness, delegation and permission consistency, auditable role and request histories, liveness of request processing, and safety under concurrent operation.
+
+Existing requirements:
+E1. Each user in the system is assigned a security clearance level: High, Medium, or Low. 
+    E1.1. Administrators have High clearance level, but not all High-clearance users are Administrators. 
+E2. Users may hold roles via direct assignment and delegated roles, subject to clearance constraints. 
+    E2.1. Users may not hold or be assigned roles that are multually exclusive to each other during Normal operation. 
+    E2.2. Users may not hold, be assigned or delegated with roles that are higher than their clearance level. 
+E3. Users may temporarily delegate their assigned roles to another user with lower clearance level, provided that the delegate meets the role’s minimum clearance requirement. 
+    E3.1. Delegated roles must expire after a fixed amount of time or be revoked at any time by an administrator. All delegation record, including the delegator, delegate, delegated role, initiated time, delegated role's expiration or early revocation and by whom, must be auditable. 
+    E3.2. No self-delegation is allowed. 
+E4. Users may submit requests for actions.
+    E4.1. Each request for an action can affect one or more system objects, each with a classification level of High, Medium, or Low. The classification of a request is the highest classification of all affected objects. 
+    E4.2. Users may submit requests which have classification levels less than or equal to the user's clearance level. 
+    E4.3. Users with strictly higher clearance may approve or reject requests from lower-clearance users. 
+    E4.4. Requests are submitted and processed concurrently in FIFO order—meaning no newer request is processed before its predecessors—and every request is guaranteed to be eventually processed. All request processing record, including the request status, request's classification level and request's processor, must be auditable.
 
 REQUIREMENTS FOR NEW MODULE: Emergency Module
 
 FUNCTIONAL REQUIREMENTS:
 
 Emergency module requirements:
-R1. While operating in Normal mode, exactly 2 administrators are required to trigger an emergency, causing the system to enter the Emergency mode.
+R1. While operating in Normal mode, exactly 2 administrators are required to trigger an emergency, causing the system to enter the Emergency mode. The system can only enter the Emergency mode once.
 R2. The Emergency mode is active only for a limited time, and the system must eventually return to Normal mode.
 R3. During the Emergency mode:
-    R3.1. Request processing may bypass the FIFO order to prioritize processing multiple high classification requests at the same time.
+    R3.1. Request processing may bypass FIFO order to prioritize handling multiple higher-classification requests concurrently. Requests are prioritized by their classification level, ensuring higher-classification requests are always processed before lower-classification ones. 
     R3.2. Users may temporarily hold mutual exclusive roles. 
-    R3.3. Administrators temporarily hold emergency privileges.
+    R3.3. Administrators, who trigger the Emergency mode, may temporarily hold emergency privileges.
 R4. After Emergency mode ends:
-    R4.1. Emergency privileges must be revoked.
-    R4.2 Delegated roles during the emergency must be revoked.
+    R4.1. Emergency privileges must be revoked from the administrators.
+    R4.2. Delegated roles initiated during Emergency must be revoked. Delegated roles initiated during Normal mode, prior to Emergency mode, can persists until its expiration, unless it is revoked early by an administrator.
     R4.3. Administrators must update their credentials.
 

@@ -1,0 +1,24 @@
+{
+  "pred Next": [
+    0
+  ],
+  "fact DelegationClearance": [
+    1
+  ],
+  "pred precedes": [
+    9,
+    12,
+    13,
+    14
+  ],
+  "fun firstPendingFIFO": [
+    10,
+    11
+  ],
+  "pred R1": [
+    15
+  ],
+  "assert assertEmergencyActivationExactlyTwoAdmins": [
+    17
+  ]
+}

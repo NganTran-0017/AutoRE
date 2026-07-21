@@ -1,0 +1,67 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples
+- Predicates: Satisfiable
+- Instances: Meaningful (possible vacuity)
+- Vacuity: Possible
+- Overall: Incomplete
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+- In all scenario predicates for Emergency-mode assertions, explicitly require:
+    1. The existence of at least one Emergency state in the trace.
+    2. At least one pair of mutually exclusive roles to exist in the system (these roles must be present, not just defined).
+    3. At least one user to simultaneously hold both roles from a mutually exclusive pair during Emergency.
+- For all check commands related to Emergency-mode (especially assertMutExRolesCanBeHeldEmergency), require the above scenario predicate as a precondition or scope constraint.
+- For Normal-mode assertions, ensure the model enforces that no user can ever simultaneously hold two mutually exclusive roles.
+- In every scenario used for Emergency-mode verification, guarantee that mutually exclusive role pairs are always present (not just optionally).
+- Create edge case scenario predicates and facts that explicitly cover:
+    - Delegations expiring exactly at Emergency exit,
+    - Users with minimum clearance levels attempting delegation,
+    - Traces with multiple Emergency↔Normal transitions.
+    Name these scenarios with the suffix `Positive` or `Negative` to clarify intent.
+- Remove duplicate invariants between facts and predicates to avoid redundancy and confusion.
+
+=== ASSUMPTIONS REVIEW ===
+- Keep: Scenarios without mutually exclusive roles are allowed only for non-Emergency verification.
+- Confirm: For Emergency-mode verification, the scenario must always include mutually exclusive role pairs, Emergency mode exercised, and at least one user holding both roles during Emergency.
+- Reduce: Do not make Emergency mode mandatory in Normal-mode-only scenarios.
+- Confirm: No role is mutually exclusive with itself; mutual exclusion is symmetric.
+- Keep: Administrator set cardinality as [0..4] per scenario.
+
+=== STRONGER CHECKS ===
+- Add explicit negative assertion: In Normal mode, assert that no user can ever hold two mutually exclusive roles (assertNoMutExRolesNormal).
+- Ensure Emergency-mode assertions positively demonstrate that at least one user holds two mutually exclusive roles during Emergency, and that this is not possible in Normal mode.
+- Add assertions for edge cases:
+    - Delegations expiring at Emergency exit (positive/negative scenarios).
+    - Users with minimum clearance attempting delegation (positive/negative scenarios).
+    - Multiple Emergency/Normal transitions to confirm correct restoration/liveness.
+- Assert EmergencyPrivilege is never granted outside Emergency and is always revoked immediately after Emergency ends.
+- Add assertion that no role is mutually exclusive with itself and that mutual exclusion is symmetric (if not already enforced).
+- Ensure no requirement or assertion passes vacuously (Emergency must be exercised and mutually exclusive roles present in Emergency scenarios).
+
+=== REQUIREMENT_UPDATES ===
+- Revise R3.2: For Emergency-mode verification, scenarios must always include at least one Emergency state, at least one mutually exclusive role pair physically present, and at least one user holding both such roles during Emergency. This is a verification scenario constraint, not a business rule.
+- Update requirement documentation to clearly distinguish scenario/modeling constraints (for verification coverage) from actual business/system requirements.
+- Explicitly state that scenarios without mutually exclusive roles are only allowed for non-Emergency verification.
+- Clarify in R4.2b: Delegations granted before Emergency are not automatically revoked on Emergency exit; only expired delegations are removed. Match this to model behavior.
+- Add: EmergencyPrivilege must never be granted outside Emergency, and must always be revoked immediately after Emergency ends (update requirement note accordingly).
+
+=== USER QUESTIONS ===
+1. (Clarified) Emergency scenario checks must always enforce that at least one user simultaneously holds two mutually exclusive roles during Emergency, and these roles must be present in the system—not just defined. Confirm this approach is correct for all Emergency-mode verifications.
+2. (Clarified) For model checking, must mutually exclusive role pairs always exist—even if in real deployments they may not? (Draft answer: Yes—they must always exist for verification scenarios.)
+3. Edge case coverage: Confirm that scenarios covering delegations expiring at Emergency exit, minimum clearance border cases, and mode transitions should be included, with scenario names explicitly indicating positive or negative intent.
+4. Confirm: Requirement is to ensure EmergencyPrivilege is never granted outside Emergency, and always revoked when Emergency ends. Is there any exception?
+
+=== HANDOFF TO RE ===
+1. Strengthen and standardize scenario predicates for Emergency-mode verification: require Emergency state, mut-ex role pair present, and observable assignment of both roles to a user during Emergency.
+2. Update all Emergency-mode check commands and scenario predicates to enforce mutual exclusivity presence and observability.
+3. Extend assertion suite to cover all specified edge cases, with scenario names using `Positive` or `Negative` suffixes.
+4. Remove duplicate invariants from facts and predicates to prevent confusion.
+5. Update requirements to clearly distinguish verification scenario constraints from business/system requirements.
+6. Revise R3.2 and R4.2b per clarified rules above.
+7. Assert EmergencyPrivilege is never granted outside Emergency and always revoked immediately after Emergency ends.
+8. Seek confirmation/clarification on finalized user questions above before finalizing verification and requirements alignment.
+```
+

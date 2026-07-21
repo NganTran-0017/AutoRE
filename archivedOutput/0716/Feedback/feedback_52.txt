@@ -1,0 +1,88 @@
+=== FEEDBACK ===
+```
+=== NEXT ACTION DECISION ===
+Decision: refine/narrow fix
+Rationale: The user clarified that only delegations initiated during Emergency mode require revocation before Normal mode; delegations initiated during Normal mode (even if they persist through Emergency) are not Emergency-mode delegations and do not require revocation. The model and requirements must be refined to explicitly distinguish these cases.
+
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Baseline: Satisfiable
+- Combined Model: Unsatisfiable (unsat predicate: DelegationCoverageEmergency)
+- Assertions: Counterexamples (assertR4_EmergencyDelegationsRevoked, assertDelegationCoverage)
+- Instances: N/A (relevant runs UNSAT or with assertion counterexamples)
+- Vacuity: None (failures are substantive, not trivial)
+
+=== CONVERGENCE_RECOMMENDATION ===
+Status: FALSE
+Reasoning: Hard metrics fail: persistent unsatisfiable predicate and assertion counterexamples. User's clarification reveals the current model does not correctly distinguish delegation types based on initiation mode, requiring further refinement and targeted requirement/model update.
+
+**CRITICAL CONVERGENCE CRITERIA:**
+Recommend FALSE if:
+- Any predicate shows unsatisfiability predicates
+- Requirement conflicts remain unresolved
+- Further refinement or requirement clarification needed
+
+=== REPAIR INSTRUCTIONS ===
+1. **Model Refinement (mandatory):**
+   - Update the model to explicitly track the initiation mode for each delegation. Introduce a property or signature attribute (e.g., `Delegation.initiatedIn: Mode`) to record whether a delegation was initiated in Emergency or Normal mode.
+   - Update all predicates/facts/constraints related to revocation (especially R4.2 and EmergencyModeGlobality) so that only delegations initiated in Emergency mode are required to be revoked prior to or at the Emergency/Normal transition. Delegations initiated in Normal mode, even if they persist through Emergency, must not be treated as Emergency-mode delegations for revocation purposes.
+   - Adjust assertions (e.g., DelegationCoverage, assertR4_EmergencyDelegationsRevoked) to use this new distinction.
+   - Add/adjust test scenarios to verify delegation persistence across Emergency/Normal transitions for both delegation types.
+
+2. **Diagnostic Experiments (if needed after above):**
+   - Rerun the diagnostic scenarios from the previous feedback, but ensure they differentiate between delegations by initiation mode.
+   - Verify that, after refinement, the unsat predicate and assertion failures are resolved and meaningful instances are produced.
+
+3. **Requirement Traceability:**
+   - Clearly document in both the model and requirement comments the distinction between Emergency-mode and Normal-mode delegations to prevent future ambiguities.
+
+
+
+--- Diagnostic Experiments (verbatim from InterpretResults, auto-included) ---
+1. Test 1: Modify DelegationCoverage to require only that Emergency-mode and Normal-mode delegations can exist in separate executions (comment one out at a time), and check whether each is individually SAT.
+2. Test 2: Relax R4.2 in a diagnostic branch to allow Emergency-mode delegations to persist for one step into NormalMode, and check if DelegationCoverage becomes SAT.
+3. Test 3: Add a diagnostic predicate that witnesses only a Normal-mode delegation after Emergency end, then only an Emergency-mode delegation during Emergency, and compare which is UNSAT.
+4. Test 4: Increase scope (number of States/Delegations) to rule out accidental scope limitation (not likely needed).
+5. Test 5: Temporarily remove the revocation constraint in EmergencyModeGlobality and test if DelegationCoverage becomes SAT, confirming the source of the conflict.
+=== POTENTIAL REQUIREMENT ISSUES ===
+- Issue type: ambiguity
+- Issue: Requirements and/or model do not explicitly distinguish between delegations initiated in Emergency mode and those initiated in Normal mode.
+- Rationale: This ambiguity leads to overconstraint, as delegations persisted from Normal mode through Emergency are incorrectly treated as Emergency-mode delegations for revocation, causing unsatisfiable assertions.
+- Action: Update requirements and model documentation to explicitly define "Emergency-mode delegation" as "delegations initiated during Emergency mode," and clarify revocation rules accordingly.
+
+=== ASSUMPTIONS REVIEW ===
+- Assumption: DelegationCoverage predicate is intended as a verification witness, not a system invariant, and does not require both delegation types in the same execution.
+- Category: keep
+- Rationale: User’s clarification supports this; the distinction is now clearer and should be preserved.
+
+=== REQUIREMENT UPDATES ===
+- Affected Requirement/Assumption/Constraint: R4.2 (Emergency-mode delegation revocation) and R8.1 (DelegationCoverage witness)
+- Issue Type: ambiguity / potential overconstraint
+- Evidence: User feedback and persistent assertion failures demonstrate that treating all active delegations at Emergency/Normal transition as Emergency-mode delegations is incorrect.
+- Recommended Update: 
+  - R4.2 (proposed rewording): "All delegations that are initiated during Emergency mode must be revoked before or at the Emergency/Normal transition (the first time step of Normal mode). Delegations initiated in Normal mode, even if active during Emergency, do not require revocation at this transition."
+  - R8.1 (proposed rewording): "For verification purposes only, it is sufficient to show that (a) there exists an execution with a delegation initiated and active during Emergency mode, and (b) there exists an execution with a delegation initiated and active during Normal mode; these do not need to occur in the same execution."
+- Implication: This change ensures the model and requirements align with user intent and that only relevant delegations are subject to revocation constraints, resolving overconstraint and enabling positive verification results.
+
+=== UPDATED USER QUESTIONS ===
+None
+
+=== Q&A STATUS UPDATE ===
+Q50_1: confirmed - requirement now interpreted as allowing separate executions for Emergency-mode and Normal-mode delegation witnesses, with correct delegation type distinction.
+Q51_2: confirmed - Emergency-mode delegation revocation applies only to delegations initiated during Emergency mode.
+Q49_2: confirmed - Requirements must explicitly distinguish delegation types by initiation mode as per user clarification.
+
+=== HANDOFF TO RE ===
+Priority 1 (Critical blockers): 
+- Update both model and requirements to explicitly distinguish delegations by initiation mode (Emergency vs. Normal); ensure revocation rules only apply to Emergency-initiated delegations.
+- Revise assertions and predicates to align with this distinction and rerun verification.
+Priority 2 (Important improvements): 
+- After above, ensure existential witness assertions are split per delegation initiation mode, and test scenarios cover each case.
+- Document distinction in both requirements and model comments.
+Priority 3 (Optional enhancements): 
+- Add regression/negative test cases to ensure no future conflation of delegation types.
+```
+
+=== FINAL CONVERGENCE ===
+False
+

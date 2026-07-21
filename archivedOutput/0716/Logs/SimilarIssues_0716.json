@@ -1,0 +1,83 @@
+{
+  "pred R1R2": [
+    0,
+    1,
+    15,
+    16,
+    17,
+    18,
+    19,
+    20,
+    21,
+    29
+  ],
+  "pred R1R2R3": [
+    2,
+    3,
+    7,
+    22,
+    24,
+    25,
+    26,
+    27,
+    42
+  ],
+  "assert assertR2_EventualReturnToNormal": [
+    4,
+    37,
+    38
+  ],
+  "sig Delegation": [
+    5
+  ],
+  "fun rolesHeld": [
+    6
+  ],
+  "fun leq": [
+    8,
+    9,
+    10,
+    11,
+    12,
+    13,
+    14
+  ],
+  "fact ExistingSystem": [
+    23
+  ],
+  "fact EmergencyModeDurationAndExit": [
+    30,
+    31,
+    32,
+    33,
+    34
+  ],
+  "pred EventualReturnToNormal": [
+    39
+  ],
+  "fun EventualReturnToNormal": [
+    40
+  ],
+  "pred holdsRoleDirectly": [
+    45
+  ],
+  "open util": [
+    46,
+    47,
+    48
+  ],
+  "fact EmergencyTriggerStructure": [
+    54
+  ],
+  "fun nthNext": [
+    55
+  ],
+  "fact EmergencyModeGlobality": [
+    62,
+    63,
+    65
+  ],
+  "fact EmergencyMode_TriggerUnique": [
+    64
+  ]
+}

@@ -1,0 +1,57 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples
+- Predicates: Satisfiable
+- Instances: Meaningful
+- Vacuity: Possible
+- Overall: Incomplete
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+1. Consolidate all Emergency entry constraints into a single fact, removing redundancy between positive and negative case facts.
+2. Strengthen the Emergency entry fact and related predicates to explicitly require exactly two distinct emAdmins, all of whom are in Administrator. Use #s.emAdmins = 2 and all s.emAdmins in Administrator.
+3. For negative scenarios (fewer than two, more than two, non-distinct, or non-admin emAdmins), model these as scenario predicates, and specify `expect 0` to ensure no satisfying instance exists.
+4. For EmergencyPrivilegeRevocation_Strict, ensure that no EmergencyPrivilege exists in any Normal state (not just at transition). Enforce globally with a fact: all s: State | (s.mode = Normal) => no s.emPrivs.
+5. For EmergencyCredentialUpdate_Strict, enforce that needsCredentialUpdate is set only in the first Normal state after Emergency (using prevModeIsEmergency[s]), and is empty in all other states.
+6. Remove any redundant or vacuous assertions—encode all negative cases using scenario predicates with explicit expectations as per Alloy 6 conventions.
+
+=== ASSUMPTIONS REVIEW ===
+- Keep: isAdmin iff membership in Administrator; only exactly two distinct emAdmins can trigger Emergency.
+- Reduce: Remove redundancy—encode all Emergency entry constraints in a single fact, not split across positive/negative cases.
+- Confirm: needsCredentialUpdate set in first Normal after Emergency for emAdmins only; EmergencyPrivilege revoked for both emAdmins in all Normal states.
+- Confirm: Negative scenario predicates are required for fewer than two, more than two, or non-distinct emAdmins attempting Emergency entry, each with `expect 0`.
+- Review: Explicit modeling of duplicate emAdmins is not required due to Alloy set semantics; cardinality/distinctness constraints are sufficient for requirements traceability.
+
+=== STRONGER CHECKS ===
+1. Add scenario predicates for Emergency mode entry with:
+   - Fewer than two emAdmins (#s.emAdmins < 2), with `expect 0`.
+   - More than two emAdmins (#s.emAdmins > 2), with `expect 0`.
+   - Any emAdmin not in Administrator, with `expect 0`.
+2. Add an assertion or scenario predicate that needsCredentialUpdate is only set in the first Normal state after Emergency and is always empty otherwise.
+3. Add an assertion or scenario predicate that EmergencyPrivilege is never present in any Normal state, for any admin, after Emergency ends.
+4. Ensure mutual exclusion suspension only occurs with exactly two distinct emAdmins present; negative case scenario predicates (with `expect 0`) for all other conditions.
+
+=== REQUIREMENT_UPDATES ===
+1. Revise R1 to require exactly two distinct emAdmins, all in Administrator, for Emergency entry—unify into a single constraint, explicitly forbidding all other cases.
+2. Update requirements to demand scenario predicates for all negative Emergency entry cases (single admin, duplicate, non-admin, more than two), each with `expect 0`.
+3. Clarify in R4.1 and R4.3 that EmergencyPrivilege and needsCredentialUpdate conditions must hold globally in all Normal states after Emergency, not just at transitions.
+4. Add a requirement that negative test scenarios must not be vacuously true—explicit scenario predicates with `expect 0` are required to demonstrate model rejection of invalid cases.
+
+=== USER QUESTIONS ===
+1. Is it sufficient for requirements traceability to rely solely on cardinality and distinctness constraints for emAdmins, given Alloy set semantics, or do stakeholders require explicit modeling of duplicates even though Alloy cannot represent them?
+2. For negative testing of Emergency entry with a non-Administrator, should the model temporarily relax the Administrator constraint within the scenario predicate, or is it sufficient that the model already prohibits this globally?
+
+=== HANDOFF TO RE ===
+1. Consolidate Emergency entry logic into a single, strict fact covering all positive and negative cases.
+2. Encode negative Emergency entry scenarios as scenario predicates with `expect 0` to ensure no satisfying instance exists for invalid cases.
+3. Strengthen EmergencyPrivilege and needsCredentialUpdate facts to enforce correct, exclusive behavior in all Normal states following Emergency.
+4. Revise requirements R1, R4.1, and R4.3 for clarity on negative and temporal constraints, and require explicit, non-vacuous negative scenarios.
+5. Confirm with stakeholders whether explicit modeling of duplicate emAdmins is needed for traceability, despite Alloy’s set semantics.
+6. Remove redundant facts and predicates; ensure all scenario predicates for negative cases are present and properly specified using Alloy 6 `expect` syntax.
+```
+
+[LESSON]: User prefers modeling choices to be resolved by evaluator, not referred back to requirements; negative scenario predicates should use Alloy 6 `expect 0` or `expect 1` syntax for explicitness.
+
+[EVENT]: Detected redundancy in Emergency entry constraints; recommended consolidation into a single fact and encoding negative cases as scenario predicates with `expect 0`, following user’s review.
+

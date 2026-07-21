@@ -134,16 +134,16 @@ class PromptManager:
             # RE agent - Requirements actions
             "AnalyzeRequirements": "ResponseFormatRequirements",
             "IncorporateClarifications": "ResponseFormatRequirements",
-            
+
             # RE agent - Alloy model actions
             "BuildAlloyModel": "ResponseFormatAlloyModel",
             "UpdateAlloyModel": "ResponseFormatUpdateAlloyModel",
-            
+
             # Evaluator agent - Specific response formats
             "InterpretResults": "ResponseFormatInterpretation",
-            "GenerateFeedback": "ResponseFormatFeedback",
-            "UpdateRequirements": "ResponseFormatRequirements",
-            "RefineFeedback": "ResponseFormatFeedback",  # Uses same format as GenerateFeedback
+            "GenerateSemanticFeedback": "ResponseFormatFeedback",
+            "UpdateRequirements": "ResponseFormatRequirementsPatch",
+            "RefineFeedback": "ResponseFormatFeedback",  # Uses same format as GenerateSemanticFeedback
         }
 
         # Determine which ResponseFormat section to use
@@ -158,33 +158,21 @@ class PromptManager:
         quality_standards = agent_prompts.get("QualityStandards", "")
         learning_instructions = agent_prompts.get("LearningInstructions", "")
         abstraction_guidance = agent_prompts.get("AbstractionGuidance", "")
-        analysis_principles = agent_prompts.get("AnalysisPrinciples", "")
-        primary_goal = agent_prompts.get("PrimaryGoal", "")
         convergence_criteria = agent_prompts.get("ConvergenceCriteria", "")
 
         # Define which actions should include AbstractionGuidance
         actions_with_abstraction = {
             "AnalyzeRequirements",      # RE - initial requirements analysis
-            "GenerateFeedback"#,         # Evaluator - formulating user questions
-           # "UpdateRequirements",       # Evaluator - updating requirements
-        }
-
-        # Define which actions should include AnalysisPrinciples
-        actions_with_analysis = {
             "InterpretResults",         # Evaluator - interpreting verification results
-        }
-
-        # Define which actions should NOT include PrimaryGoal
-        actions_without_primary_goal = {
-            "GenerateFeedback",         # Evaluator - feedback generation doesn't need primary goal
-            "UpdateRequirements",       # Evaluator - updating requirements doesn't need primary goal
-            "RefineFeedback",           # Evaluator - refining feedback doesn't need primary goal
+            "GenerateSemanticFeedback",  # Evaluator - formulating user questions
+           # "UpdateRequirements",       # Evaluator - updating requirements
         }
 
         # Define which actions should NOT include ConvergenceCriteria
         actions_without_convergence = {
             "UpdateRequirements",       # Evaluator - updating requirements doesn't need convergence criteria
             "GenerateSyntaxRepairInstruction",  # Evaluator - syntax repair is pre-verification, no convergence concept
+            "RefineSyntaxRepairInstruction",  # Evaluator - refining syntax repair is pre-verification, no convergence concept
         }
 
         # Define which actions should NOT include QualityStandards
@@ -192,18 +180,28 @@ class PromptManager:
             "IncorporateClarifications",  # RE - incorporating clarifications is straightforward update
             "UpdateRequirements",  # Evaluator - updating requirements is straightforward document update
             "GenerateSyntaxRepairInstruction",  # Evaluator - syntax repair has specific quality requirements in its own prompt
+            "RefineSyntaxRepairInstruction",  # Evaluator - refining syntax repair has specific quality requirements in its own prompt
+            "InterpretResults",  # Evaluator - interpretation focuses on analysis, not quality standards
+            "GenerateSemanticFeedback",  # Evaluator - feedback generation has specific format requirements in ResponseFormatFeedback
         }
 
         # Define which actions should NOT include LearningInstructions
         actions_without_learning = {
             "IncorporateClarifications",  # RE - simple clarification incorporation doesn't need learning
             "UpdateRequirements",  # Evaluator - updating requirements is straightforward document update
+            "GenerateSemanticFeedback",  # Evaluator - pause lesson recording during feedback generation
+            "GenerateSyntaxRepairInstruction",  # Evaluator - pause lesson recording during syntax repair
+            "RefineSyntaxRepairInstruction",  # Evaluator - pause lesson recording during syntax repair refinement
+            "InterpretResults",  # Evaluator - pause lesson recording during interpretation
+            "RefineFeedback",  # Evaluator - pause lesson recording during refinement
         }
 
         # Define which actions should NOT include Role section
         actions_without_role = {
             "RefineFeedback",  # Evaluator - refining feedback is a simple adjustment task
             "UpdateRequirements",  # Evaluator - updating requirements is straightforward document update
+            "GenerateSyntaxRepairInstruction",  # Evaluator - syntax repair is a focused task
+            "RefineSyntaxRepairInstruction",  # Evaluator - refining syntax repair is a focused task
         }
 
         # Combine sections - conditionally add role
@@ -212,17 +210,9 @@ class PromptManager:
             sections.append(role)
         sections.append(action_section)
 
-        # Add PrimaryGoal for all actions except those in exclusion list
-        if primary_goal and action_name not in actions_without_primary_goal:
-            sections.append(primary_goal)
-
         # Add AbstractionGuidance only for specific actions
         if abstraction_guidance and action_name in actions_with_abstraction:
             sections.append(abstraction_guidance)
-
-        # Add AnalysisPrinciples only for specific actions
-        if analysis_principles and action_name in actions_with_analysis:
-            sections.append(analysis_principles)
 
         if response_format:
             sections.append(response_format)

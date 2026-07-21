@@ -1,0 +1,98 @@
+=== FEEDBACK ===
+```
+=== NEXT ACTION DECISION ===
+Decision: refine/narrow fix
+Rationale: The regression is due to missing or insufficiently enforced constraints in three key areas (processor clearance, mutex relaxation in Emergency, and admin credential update timing). Fixes must directly reinforce these areas in the model's facts, targeting only the underconstrained transitions, not broad or unrelated logic.
+
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Baseline: Satisfiable
+- Combined Model: Satisfiable
+- Assertions: Counterexamples
+- Instances: Suspicious (key safety/liveness properties violated)
+- Vacuity: None
+
+=== CONVERGENCE_RECOMMENDATION ===
+Status: FALSE
+Reasoning: Counterexamples persist in critical assertions. Hard metrics not met; the model does not yet faithfully enforce or demonstrate all requirements.
+
+=== REPAIR INSTRUCTIONS ===
+1. Request Processor Clearance Enforcement (Fact):
+   - Add a fact to ensure that whenever a request is marked Processed, the processor has strictly higher clearance than both the request's classification and the submitter's clearance, and is not the submitter.
+   - Insert after "fact RequestStatusMonotonic" (or in the same section as similar facts).
+   - Example:
+     ```
+     fact RequestProcessorClearance {
+       all s: State, r: Request |
+         s.reqStatus[r] = Processed and some s.reqProcessor[r] =>
+           let proc = s.reqProcessor[r], rc = requestClassification[r], submit = r.submitter |
+             proc != submit and
+             proc.clearance in Clearance and
+             ((proc.clearance = High and rc != High and submit.clearance != High) or
+              (proc.clearance = Medium and rc = Low and submit.clearance = Low))
+     }
+     ```
+   - Adjust the logic as needed to match the requirement: processor's clearance must be strictly higher than both request classification and submitter.
+
+2. Emergency Mutex Relaxation Correction:
+   - Refine the "DelegationMutex" fact to ensure that mutual exclusion of roles is enforced only in Normal mode, and fully lifted (including via delegation and direct assignment) during Emergency.
+   - Replace or update:
+     ```
+     fact DelegationMutex {
+       all s: State |
+         s.mode = Normal =>
+           all u: User |
+             all r1, r2: Role | r2 in r1.mutexWith =>
+               not (r1 in s.userRoles[u] and r2 in s.userRoles[u])
+     }
+     ```
+   - Confirm that in Emergency mode, there is no constraint preventing any user from holding mutex roles (whether by delegation or direct assignment). If direct assignment should still be restricted, clarify with a predicate/fact distinction.
+
+3. Admin Credential Update Timing Enforcement:
+   - Add a fact to ensure "adminCredUpdated" can only be set to True in the first Normal state after Emergency, and never during Emergency.
+   - Insert after Emergency deactivation facts.
+   - Example:
+     ```
+     fact AdminCredUpdateAfterEmergency {
+       all s, s2: State, a: Administrator |
+         s.mode = Emergency and s2.mode = Normal and Next[s, s2] =>
+           s2.adminCredUpdated[a] = True and
+           -- In any other state, adminCredUpdated[a] = True only if it's also the first Normal state after Emergency
+           all s3: State |
+             (s3 != s2 and s3.adminCredUpdated[a] = True) implies
+               (some s4: State | s4.mode = Emergency and Next[s4, s3] and s3.mode = Normal)
+     }
+     ```
+   - Also ensure that adminCredUpdated[a] = True is not possible in any Emergency state.
+
+4. Regression Stability Guard:
+   - After making above changes, ensure that all previously passing assertions remain stable.
+
+=== ASSUMPTIONS REVIEW ===
+None - assumptions appear sound
+
+=== REQUIREMENT UPDATES ===
+None - requirements are clear
+
+=== UPDATED USER QUESTIONS ===
+None
+
+=== Q&A STATUS UPDATE ===
+None - no status changes
+
+=== HANDOFF TO RE ===
+Priority 1 (Critical blockers): 
+- Add/enforce fact for request processor clearance as per requirement.
+- Refine DelegationMutex so mutual exclusion is relaxed in Emergency as intended.
+- Add/enforce fact to restrict admin credential updates to only the first Normal state after Emergency.
+
+Priority 2 (Important improvements): 
+- Confirm that regression fixes do not break other invariants or previously passing assertions.
+
+Priority 3 (Optional enhancements): 
+- Consider adding vacuity and edge-case checks on new or modified constraints once above issues are resolved.
+```
+
+=== FINAL CONVERGENCE ===
+False
+

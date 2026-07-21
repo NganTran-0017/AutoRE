@@ -1,0 +1,87 @@
+=== FEEDBACK ===
+```
+=== NEXT ACTION DECISION ===
+Decision: refine/narrow fix
+Rationale: User has approved R4.2 and R4.1 as drafted, and clarified R8.1 regarding delegation persistence, resolving the key ambiguities; requirements must be updated as per user clarification, then model and test predicates adjusted accordingly.
+
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Baseline: Satisfiable
+- Combined Model: Unsatisfiable (DelegationCoverageEmergency UNSAT)
+- Assertions: Counterexamples (assertR4_EmergencyDelegationsRevoked, assertDelegationCoverage, assertR3_OnlyTriggeringAdminsGetEmergencyPrivs)
+- Instances: Suspicious (no witness for Emergency-mode delegations in Emergency state)
+- Vacuity: Possible (witness predicates UNSAT, model cannot realize key scenarios)
+
+=== CONVERGENCE_RECOMMENDATION ===
+Status: FALSE
+Reasoning: Hard metrics fail due to unsatisfiable witness predicates and persistent assertion counterexamples; requirement updates and model alignment required per clarified user input.
+
+=== REPAIR INSTRUCTIONS ===
+- Update model constraints and test predicates to match the clarified requirements:
+    * R4.2: Emergency-mode delegations must be revoked before the first state in NormalMode; they may remain active until and including the last EmergencyMode state, but not into NormalMode.
+    * R8.1: Delegations made during EmergencyMode must terminate or be revoked before NormalMode begins; delegations made during NormalMode may persist across mode transitions until their expiration or early revocation. Ensure DelegationCoverage witness reflects that Emergency-mode delegations are only required to exist during EmergencyMode, and Normal-mode delegations may cross transitions.
+    * R4.1: Emergency privileges must be revoked globally for all triggering admins immediately upon entering NormalMode.
+- Adjust witness and assertion predicates to test the precise timing of both revocation and persistence rules, according to the clarified requirements.
+- After updating, rerun all test predicates and assertions to verify that the hard metrics are satisfied.
+- Do NOT repeat prior model repairs that assumed stricter revocation timing for Emergency-mode delegations or unnecessary persistence for Emergency-mode delegations into NormalMode.
+
+
+
+--- Diagnostic Experiments (verbatim from InterpretResults, auto-included) ---
+1. Relax EmergencyRestoration_PrivilegesAndDelegations to allow Emergency-mode delegations to be active up to and including the last EmergencyMode state, revoking only at the first NormalMode state.
+2. Add a run command/predicate that seeks a state in EmergencyMode with an active Emergency-mode delegation, regardless of when it is revoked, and see if this can be constructed.
+3. Temporarily remove or relax revocation timing to see if DelegationCoverageEmergency becomes SAT.
+4. Test minimal model with just one delegation during EmergencyMode and run with increased Time and State bounds.
+5. Clarify exactly when and how Emergency-mode delegations must be revoked, and adjust model/facts accordingly.
+=== POTENTIAL REQUIREMENT ISSUES ===
+- Issue type: requirement ambiguity (RESOLVED for R4.2 and R4.1 by user clarification)
+  - Issue: Prior ambiguity regarding the timing for revocation of Emergency-mode delegations and privilege handoff.
+  - Rationale: User has now provided explicit language—no further ambiguity remains.
+  - Action: Update requirements and model as per user’s clarified statements.
+- Issue type: requirement inconsistency (RESOLVED for R8.1 by user clarification)
+  - Issue: Prior incompatibility between revocation and witness coverage regarding delegation persistence.
+  - Rationale: User clarified correct behavior for delegations initiated in Emergency and Normal modes.
+  - Action: Update R8.1 and related model/test logic per clarified semantics.
+
+=== ASSUMPTIONS REVIEW ===
+None - assumptions appear sound
+
+=== REQUIREMENT UPDATES ===
+- Affected Requirement/Assumption/Constraint: R4.2 (Emergency-mode delegation revocation timing)
+  - Issue Type: ambiguity (RESOLVED)
+  - Evidence: User approval of the proposed update; explicit termination/revocation before first NormalMode state.
+  - Recommended Update: "All delegations made during Emergency mode must be revoked before the beginning of Normal mode (the first time step in Normal mode). Emergency-mode delegations may remain active up to and including the last state of EmergencyMode, but may not persist into NormalMode."
+  - Implication: Model can allow Emergency-mode delegations to exist throughout EmergencyMode, with revocation required immediately before NormalMode begins.
+- Affected Requirement/Assumption/Constraint: R8.1 (DelegationCoverage witness)
+  - Issue Type: inconsistency (RESOLVED)
+  - Evidence: User clarified: "Delegations made during Emergency mode must be terminated or revoked before the beginning of Normal state... Delegations made during Normal mode may persist across system's mode transition."
+  - Recommended Update: "The DelegationCoverage witness requires that an Emergency-mode delegation is active in some EmergencyMode state (but not in NormalMode), and a Normal-mode delegation is active in some NormalMode state (and may persist across transitions according to its expiration or revocation)."
+  - Implication: Ensures model/test logic matches the intended coverage scenario for both delegation types.
+- Affected Requirement/Assumption/Constraint: R4.1 (emergency privilege revocation timing)
+  - Issue Type: ambiguity (RESOLVED)
+  - Evidence: User approval of strict revocation timing at Emergency/Normal transition.
+  - Recommended Update: "Emergency privileges must be revoked globally for all triggering administrators immediately upon entering the first state in NormalMode after Emergency ends; at no time in NormalMode may any administrator hold emergency privileges."
+  - Implication: Model/test logic can enforce immediate revocation of emergency privileges at mode transition.
+
+=== UPDATED USER QUESTIONS ===
+None
+
+=== Q&A STATUS UPDATE ===
+Q49_2: outdated - Superseded by user’s explicit R4.2 statement.
+Q50_1: confirmed - DelegationCoverage witness scope clarified.
+Q50_3: confirmed - Strict emergency privilege exclusivity and timing approved.
+
+=== HANDOFF TO RE ===
+Priority 1 (Critical blockers): 
+- Update requirements and model constraints per user-approved language for R4.2, R8.1, and R4.1.
+- Refactor model/test predicates to enforce new delegation and privilege revocation semantics.
+Priority 2 (Important improvements): 
+- Review and update all related requirement and model documentation to ensure exact correspondence with clarified intent.
+- Add explicit comments/examples in the model for delegation persistence and revocation at mode transitions.
+Priority 3 (Optional enhancements): 
+- After requirements/model update, add diagnostic run predicates to confirm correct witness and assertion coverage.
+```
+
+=== FINAL CONVERGENCE ===
+False
+

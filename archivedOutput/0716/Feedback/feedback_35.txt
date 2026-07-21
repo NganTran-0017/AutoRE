@@ -1,0 +1,70 @@
+=== FEEDBACK ===
+```
+=== NEXT ACTION DECISION ===
+Decision: refine/narrow fix
+Rationale: User has confirmed both clarifications—the model must enforce that every EmergencyTrigger always has endedAt set and that a NormalMode state must exist at endedAt—so the fix direction is correct but must be fully implemented and verified.
+
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Baseline: Satisfiable
+- Combined Model: Satisfiable
+- Assertions: Counterexamples (assertR2_EventualReturnToNormal fails)
+- Instances: Meaningful (counterexample demonstrates EmergencyMode can persist indefinitely)
+- Vacuity: None
+
+=== CONVERGENCE_RECOMMENDATION ===
+Status: FALSE
+Reasoning: The liveness assertion still fails; requirements now confirmed, but the model must be strengthened and reverified to eliminate indefinite EmergencyMode scenarios before convergence can be recommended.
+
+=== REPAIR INSTRUCTIONS ===
+- In the EmergencyModeDurationAndExit fact, enforce for every EmergencyTrigger (et):
+    - et.endedAt must always be set (one et.endedAt), immediately upon EmergencyMode entry (by timeout or early termination).
+    - There must exist a State s such that s.session = et.session, s.t = et.endedAt, and s.mode = NormalMode.
+    - For all States s in et.session, if s.t >= et.endedAt, then s.mode = NormalMode (double-check for completeness).
+    - No EmergencyTrigger may exist without its endedAt and corresponding NormalMode state at endedAt.
+    - Example update (pseudo-Alloy):
+      ```
+      all et: EmergencyTrigger | {
+          one et.endedAt
+          some s: State | s.session = et.session && s.t = et.endedAt && s.mode = NormalMode
+          all s: State | (s.session = et.session && s.t >= et.endedAt) implies (s.mode = NormalMode)
+      }
+      ```
+- After these changes, rerun assertR2_EventualReturnToNormal to confirm the assertion passes and no indefinite EmergencyMode is possible.
+
+=== POTENTIAL REQUIREMENT ISSUES ===
+- Issue type: requirement gap
+- Issue: The requirements did not previously state explicitly that EmergencyTrigger.endedAt must always be set and that the system must return to NormalMode at endedAt.
+- Rationale: The verification counterexample and user confirmation show these must be explicit to prevent indefinite EmergencyMode.
+- Action: Update requirements to state that every EmergencyTrigger must always have endedAt set (by timeout or early end), and that a NormalMode state must exist at endedAt.
+
+=== ASSUMPTIONS REVIEW ===
+- Assumption: EmergencyTrigger.endedAt is always set when Emergency is triggered.
+- Category: keep
+- Rationale: User has now explicitly confirmed this; model and requirements should match.
+
+=== REQUIREMENT UPDATES ===
+- Affected Requirement/Assumption/Constraint: R2: Emergency Mode Duration
+- Issue Type: missing requirement / logical gap
+- Evidence: Assertion failure and model counterexample show EmergencyMode could persist if endedAt is unset; user confirmation requires this loophole be closed.
+- Recommended Update: Amend R2 to state that for every EmergencyTrigger, endedAt must always be set (by timeout or early end), and that the system returns to NormalMode at endedAt.
+- Implication: Ensures EmergencyMode cannot persist indefinitely and aligns model/verification with intended system safety guarantees.
+
+=== UPDATED USER QUESTIONS ===
+None
+
+=== Q&A STATUS UPDATE ===
+Q1: confirmed - User has explicitly confirmed both requirements for endedAt and NormalMode at endedAt.
+
+=== HANDOFF TO RE ===
+Priority 1 (Critical blockers): 
+- Update EmergencyModeDurationAndExit fact per REPAIR INSTRUCTIONS to enforce both endedAt and NormalMode at endedAt for all EmergencyTriggers.
+Priority 2 (Important improvements): 
+- Update R2 in requirements to explicitly require endedAt on every EmergencyTrigger and require NormalMode restoration at endedAt.
+Priority 3 (Optional enhancements): 
+- None at this time.
+```
+
+=== FINAL CONVERGENCE ===
+False
+

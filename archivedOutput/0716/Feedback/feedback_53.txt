@@ -1,0 +1,125 @@
+=== FEEDBACK ===
+```
+=== NEXT ACTION DECISION ===
+Decision: refine/narrow fix
+Rationale: User review identifies variable and structural redundancies (delegatedAt vs InitiatedIn; duringEmergency; time vs State) and requests model refactoring to remove these, requiring specific model changes and corresponding adjustments to requirements and assumptions.
+
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Baseline: Satisfiable
+- Combined Model: Unsatisfiable
+- Assertions: Counterexamples (assertR4_EmergencyDelegationsRevoked, assertDelegationCoverage)
+- Instances: N/A (no positive instance for DelegationCoverageEmergency)
+- Vacuity: None (hard UNSAT, not vacuous)
+
+=== CONVERGENCE_RECOMMENDATION ===
+Status: FALSE
+Reasoning: The user has requested significant structural changes (removal of redundant variables and consolidation of timeline/state representations), which invalidates the current model structure and requires further repairs and retesting. Persistent unsatisfiability and assertion failures remain, and hard metrics do not pass.
+
+=== REPAIR INSTRUCTIONS ===
+1. **Remove Redundant Variables:**
+   - Eliminate either delegatedAt or InitiatedIn from the Delegation signature; retain only one to represent the initiation step of a delegation.
+   - Remove duringEmergency from Delegation; instead, define an auxiliary predicate or use the (now unique) initiation variable in conjunction with system mode to infer whether a delegation was initiated during Emergency mode.
+
+2. **Unify Timeline Representation:**
+   - Remove either time or State from the model; select one (preferably State for clarity) to represent progression of system steps.
+   - Update all predicates, facts, and assertions to use the unified timeline variable.
+
+3. **Enforce Emergency Mode Duration:**
+   - Add a constraint ensuring that once Emergency mode is triggered, it lasts at least one time/State step before transitioning to Normal mode.
+   - Example: For any transition where Emergency mode is entered at State s, require that the mode remains Emergency at State s+1 before it can return to Normal.
+
+4. **Refactor Delegation Mode Logic:**
+   - Adjust predicates that detect delegations initiated in Emergency mode to reference only the remaining initiation variable and system mode at that State.
+   - Remove any logic that depends on redundant variables.
+
+5. **Update/Refactor all related assertions and test scenarios:**
+   - Ensure all references to removed variables are updated.
+   - Rerun baseline and assertion tests after refactoring.
+
+6. **Document all variable removals and logic changes in the model comments for traceability.**
+
+
+
+--- Diagnostic Experiments (verbatim from InterpretResults, auto-included) ---
+1. Create and run two separate predicates: one requiring only Emergency-mode delegation coverage, and one only Normal-mode delegation coverage, each run independently, to confirm both are possible in separate executions.
+2. Refactor assertDelegationCoverage to require only that at least one of DelegationCoverageEmergency or DelegationCoverageNormal is satisfied, and test satisfiability.
+3. Temporarily relax the Emergency-mode delegation revocation constraint to allow Emergency-mode delegations to persist into NormalMode, and test if delegation coverage in the same execution becomes satisfiable (diagnoses whether revocation is the blocker).
+4. Create a minimal run with only EmergencyMode and delegation logic (no revocation), to confirm the minimal scenario and further isolate the blocking constraint.
+=== POTENTIAL REQUIREMENT ISSUES ===
+- Issue type: requirement ambiguity / redundancy
+- Issue: The requirements and model definitions tolerate redundant variables (delegatedAt vs InitiatedIn; duringEmergency), leading to inconsistent or ambiguous delegation initiation logic.
+- Rationale: Redundant and overlapping variables cause maintenance and verification challenges, and may conceal or introduce subtle bugs.
+- Action: Update the requirements to refer to only a single initiation variable for delegations, and clarify how Emergency-mode initiation is determined. Remove references to redundant variables.
+
+- Issue type: missing constraint
+- Issue: The requirements do not specify a minimum Emergency mode duration.
+- Rationale: Without a minimum Emergency mode step, the system could immediately exit Emergency upon entry, violating the intended behavior.
+- Action: Add a requirement that Emergency mode, once triggered, must persist for at least one time/State step.
+
+- Issue type: timeline redundancy
+- Issue: Both time and State are used to represent system progression, leading to confusion and potential errors.
+- Rationale: Having two constructs for the same concept is unnecessary and can cause inconsistencies.
+- Action: Update requirements to specify use of only one timeline/state variable.
+
+=== ASSUMPTIONS REVIEW ===
+- Assumption: R8.1 requires existential (across executions) coverage, not conjunctive (in the same execution) coverage.
+- Category: keep
+- Rationale: User has not overridden this; previous Q&A confirms.
+
+- Assumption: Emergency-mode delegations must be revoked before or at the first NormalMode state after Emergency ends.
+- Category: keep
+- Rationale: Confirmed in Q&A and requirement text.
+
+=== REQUIREMENT UPDATES ===
+- Affected Requirement/Assumption/Constraint: Delegation initiation variables (delegatedAt, InitiatedIn, duringEmergency)
+- Issue Type: redundancy / ambiguity
+- Evidence: User review and persistent modeling inconsistencies; model logic depends on overlapping variables.
+- Recommended Update: Specify in requirements that only one variable (either delegatedAt or InitiatedIn) is used to mark delegation initiation; remove duringEmergency and clarify that Emergency-mode initiation is determined by the system mode at the initiation step.
+- Implication: Simplifies model and improves maintainability/traceability.
+
+- Affected Requirement/Assumption/Constraint: Emergency mode duration
+- Issue Type: missing constraint
+- Evidence: User review requests explicit constraint for Emergency mode to last at least one time/State step.
+- Recommended Update: Add explicit requirement: "Emergency mode, once triggered, must persist for at least one time/State step before transition back to Normal mode is allowed."
+- Implication: Ensures system behavior is well-defined and prevents immediate mode reversion.
+
+- Affected Requirement/Assumption/Constraint: Timeline representation
+- Issue Type: redundancy / ambiguity
+- Evidence: User review; model currently uses both time and State.
+- Recommended Update: Specify in requirements/modeling guidelines that only one variable (time or State) is to be used to represent system progression.
+- Implication: Reduces confusion and risk of inconsistent step handling.
+
+- Affected Requirement/Assumption/Constraint: R8.1 (Delegation Coverage Verification)
+- Issue Type: ambiguity, inconsistency
+- Evidence: Persistent unsatisfiability and assertion failures for DelegationCoverageEmergency and assertDelegationCoverage; UNSAT Matrix and regression log show that enforcing both Emergency-mode and Normal-mode delegation coverage in the same execution is blocked by R4.2, and that existential coverage across executions is satisfiable and intended per prior user clarifications.
+- Recommended Update: Replace R8.1 with: "For verification purposes only, it is sufficient to show that (a) there exists an execution with a delegation initiated and active during Emergency mode, and (b) there exists an execution with a delegation initiated and active during Normal mode; these do not need to occur in the same execution. The absence of a delegation in either mode is permitted in actual system operation."
+- Implication: This update resolves the contradiction with R4.2, permits the model to witness Emergency-mode and Normal-mode delegation coverage in separate executions, eliminates the need to enforce both properties in a single trace, and brings the assertion and predicate structure into alignment with user-confirmed intent.
+
+=== UPDATED USER QUESTIONS ===
+1. Please confirm whether you prefer to retain "delegatedAt" or "InitiatedIn" as the unique variable for delegation initiation, and whether all logic should be updated to use only this variable.
+2. Should "State" or "time" be retained as the unique timeline variable for system progression? Please specify which to use.
+3. Is it acceptable for the model to infer "duringEmergency" for a delegation by checking the system mode at the chosen initiation variable, with no separate boolean field?
+
+=== Q&A STATUS UPDATE ===
+Q50_1: confirmed - User confirmed that R8.1 coverage may be existential across executions.
+Q51_2: confirmed - User confirmed that Emergency-mode delegations must be revoked before entering Normal mode, and that Normal-mode delegations may persist.
+
+=== HANDOFF TO RE ===
+Priority 1 (Critical blockers): 
+- Remove redundant variables (delegatedAt/InitiatedIn, duringEmergency) and update all model logic to use only the remaining variable.
+- Consolidate time and State into a single timeline/state variable throughout requirements and model.
+- Add explicit requirement that Emergency mode must last at least one time/State step once triggered.
+
+Priority 2 (Important improvements):
+- Update R8.1 to clarify existential (not conjunctive) coverage semantics as specified above.
+- Revise and document all affected predicates, assertions, and test cases to match the updated structure and requirements.
+
+Priority 3 (Optional enhancements):
+- Add model comments documenting the rationale for variable consolidation.
+- Include vacuity and negative test scenarios to confirm that no unintended overlaps or mutual coverage are required after refactoring.
+```
+
+=== FINAL CONVERGENCE ===
+False
+

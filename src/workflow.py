@@ -4,6 +4,7 @@ AutoRE Workflow (V2) - Using SharedRuntimeContext.
 Simplified workflow that directly calls actions instead of message passing.
 """
 import asyncio
+import signal
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -41,7 +42,7 @@ class AutoREWorkflow:
         input_file: str,
         base_dir: str = ".",
         max_iterations: int = 10,
-        timeout: int = 300,
+        timeout: Optional[int] = None,
         project_name: str = "default"
     ):
         """
@@ -51,13 +52,14 @@ class AutoREWorkflow:
             input_file: Path to input requirements file
             base_dir: Base directory for the project
             max_iterations: Maximum refinement iterations
-            timeout: CLI timeout in seconds
+            timeout: CLI timeout in seconds. If None, falls back to
+                config.yaml's user_interaction.response_timeout (or 300 if
+                that is also unset).
             project_name: Project name for memory isolation
         """
         self.base_dir = Path(base_dir)
         self.input_file = input_file
         self.max_iterations = max_iterations
-        self.timeout = timeout
 
         # Load configuration
         config_path = self.base_dir / "config.yaml"
@@ -71,6 +73,11 @@ class AutoREWorkflow:
         except ValueError as e:
             print(f"Error: {e}")
             raise
+
+        if timeout is None:
+            timeout = self.config_loader.get_user_interaction_config().get(
+                'response_timeout', 300)
+        self.timeout = timeout
 
         # Setup logging
         self._setup_logging()
@@ -99,6 +106,20 @@ class AutoREWorkflow:
         self.update_requirements = UpdateRequirements(self.context, agent_name="Evaluator")
         self.refine_feedback = RefineFeedback(self.context, agent_name="Evaluator")
 
+        # Post-analysis chain (deterministic): ErrorNormalizer -> IssuePatternTracker
+        # -> SemanticIssueTracker -> RepairPlateauDetector (escalation builders)
+        from .utils.error_normalizer import ErrorNormalizer
+        from .utils.issue_pattern_tracker import IssuePatternTracker
+        from .utils.semantic_issue_tracker import SemanticIssueTracker
+        self.error_normalizer = ErrorNormalizer(logger=self.logger)
+        self.issue_pattern_tracker = IssuePatternTracker(logger=self.logger)
+        self.semantic_issue_tracker = SemanticIssueTracker(logger=self.logger)
+
+        # Lessons are confirmed only after their target issue stays resolved
+        # for several consecutive iterations (guards against oscillating errors)
+        from .utils.learning_system import LessonProbation
+        self.lesson_probation = LessonProbation(required_clean_iterations=3, logger=self.logger)
+
         # Configure LLM for all actions
         self._configure_action_llms()
 
@@ -106,10 +127,6 @@ class AutoREWorkflow:
         print(f"  - Project: {project_name}")
         print(f"  - Max iterations: {max_iterations}")
         print(f"  - Input: {input_file}")
-
-    def _debug(self, message: str):
-        """Log debug message to both console and log file."""
-        self.logger.log(message)
 
     def _setup_llm(self, llm_config: dict):
         """Configure LLM settings."""
@@ -183,13 +200,25 @@ class AutoREWorkflow:
         console_handler.setFormatter(formatter)
         metagpt_logger.addHandler(console_handler)
 
+    def _setup_signal_handlers(self):
+        """Setup signal handlers for graceful shutdown on Ctrl+C and SIGTERM."""
+        def signal_handler(signum, frame):
+            raise KeyboardInterrupt()
+
+        signal.signal(signal.SIGINT, signal_handler)  # Ctrl+C
+        signal.signal(signal.SIGTERM, signal_handler)  # Graceful termination
+        print("  ⚙️  Signal handlers registered (Ctrl+C will save state before exit)")
+
     async def run(self, resume_mode: bool = False, resume_iteration: Optional[int] = None):
         """Run the complete workflow.
-        
+
         Args:
             resume_mode: If True, resume from existing model/requirements
             resume_iteration: Specific iteration to resume from (None = latest)
         """
+        # Setup signal handlers for graceful shutdown
+        self._setup_signal_handlers()
+
         try:
             self.logger.log("\n" + "=" * 80)
             self.logger.log("AutoRE - Automated Requirements Engineering")
@@ -199,8 +228,15 @@ class AutoREWorkflow:
             if resume_mode:
                 # Resume from existing files
                 await self._resume_from_analyzer(resume_iteration)
+
+                # Restore the immutable original input (ground truth for
+                # requirement-drift protection) if a prior run preserved it.
+                original = self.context.file_manager.load_original_requirements()
+                if original:
+                    self.context.artifacts.store_original_requirements(original)
                 
-                # Repair regression log entries from previous runs with buggy code
+                # [TEMPORARY] Repair regression log entries from previous runs with buggy code
+                # TODO: Remove this call when _repair_regression_log_issues() is removed
                 await self._repair_regression_log_issues()
                 
                 # In resume mode, max_iterations is additional iterations from current
@@ -209,9 +245,14 @@ class AutoREWorkflow:
             else:
                 # Clear regression log for fresh start from iteration 0
                 self.context.regression_log.clear()
+                self.context.requirement_patch_log.clear()
 
-                # Read input requirements
+                # Read input requirements and preserve them as the immutable
+                # ground truth every future requirement update is checked
+                # against (anti-drift anchor).
                 raw_requirements = self._read_input()
+                self.context.artifacts.store_original_requirements(raw_requirements)
+                self.context.file_manager.save_original_requirements(raw_requirements)
 
                 # Step 1: Analyze initial requirements
                 await self._step1_analyze_requirements(raw_requirements)
@@ -247,6 +288,9 @@ class AutoREWorkflow:
                     self.logger.log("\n✅ Verification complete! All criteria met.")
                     self.logger.log("  Hard Metrics: ✓ Passed")
                     self.logger.log("  Agent Assessment: ✓ Converged")
+                    # Convergence (hard metrics passed) proves no issues remain:
+                    # confirm any lessons still on probation
+                    self._store_confirmed_lessons(self.lesson_probation.flush())
                     break
 
                 # Convergence not met - continue refinement
@@ -270,15 +314,44 @@ class AutoREWorkflow:
             # Save copy of regression log to Output/RegressionLog/
             self.context.regression_log.save_copy_to_output()
 
+            # Save error symbol index to Output/RegressionLog/
+            self.context.regression_log.save_error_symbol_index()
+
+            # Save copy of requirement patch log to Output/RequirementPatchLog/
+            self.context.requirement_patch_log.save_copy_to_output()
+
             self.logger.log("\n" + "=" * 80)
             self.logger.log("Workflow Complete")
             self.logger.log("=" * 80)
             self._print_summary()
 
+        except KeyboardInterrupt:
+            # Handle manual interruption (Ctrl+C)
+            print("\n\n⚠️  Workflow interrupted by user")
+            self.logger.log("\n" + "=" * 80)
+            self.logger.log("Workflow Interrupted by User")
+            self.logger.log("=" * 80)
+
+            # Save state before exiting
+            self.context.save_state()
+            self.context.regression_log.save_copy_to_output()
+            self.context.regression_log.save_error_symbol_index()
+            self.context.requirement_patch_log.save_copy_to_output()
+
+            print("  ✓ State saved - you can resume from where you left off")
+            self.logger.log("State saved successfully")
+            raise
+
         except Exception as e:
             # Save copy of regression log even on failure
             self.context.regression_log.save_copy_to_output()
-            
+
+            # Save error symbol index even on failure
+            self.context.regression_log.save_error_symbol_index()
+
+            # Save copy of requirement patch log even on failure
+            self.context.requirement_patch_log.save_copy_to_output()
+
             self.logger.log(f"\n❌ Workflow failed with error: {e}")
             import traceback
             traceback.print_exc()
@@ -373,8 +446,23 @@ class AutoREWorkflow:
         try:
             feedback = self.context.file_manager.load_feedback(target_iteration)
             if feedback:
-                self.context.artifacts.store_feedback(target_iteration, feedback)
-                print(f"✓ Loaded existing feedback from iteration {target_iteration}")
+                # Determine action type based on analyzer results from regression log
+                # Check if there were syntax errors in the target iteration
+                action_type = "GenerateSemanticFeedback"  # Default
+
+                entry = self.context.regression_log.get_entry(target_iteration)
+                if entry and entry.current_result:
+                    # Check error_message field to determine if there were syntax errors
+                    # (syntax field may be "Pending" if entry was just created)
+                    if entry.current_result.error_message:
+                        action_type = "GenerateSyntaxRepairInstruction"
+                        print(f"✓ Loaded existing feedback from iteration {target_iteration} (syntax repair mode - had syntax errors)")
+                    else:
+                        print(f"✓ Loaded existing feedback from iteration {target_iteration} (semantic repair mode - no syntax errors)")
+                else:
+                    print(f"✓ Loaded existing feedback from iteration {target_iteration} (defaulting to semantic mode)")
+
+                self.context.artifacts.store_feedback(target_iteration, feedback, action_type=action_type)
         except:
             print(f"  (No feedback found for iteration {target_iteration} - will generate fresh)")
         
@@ -382,66 +470,89 @@ class AutoREWorkflow:
 
     async def _repair_regression_log_issues(self):
         """
-        Repair issue fields in regression log entries by re-analyzing old model files.
-        
+        [TEMPORARY - REMOVE IN FUTURE] Repair issue fields in regression log entries by re-analyzing old model files.
+
         This is needed when resuming from a previous run where entries were created with buggy code
         that didn't properly extract issues. We re-run the analyzer on old models to get correct issues.
+
+        TODO: Remove this function once all regression logs from old buggy runs have been migrated/discarded.
+        Issues fixed by this repair:
+        - Empty or "No issues" when there were actually issues
+        - "counterexample: unknown" due to 'command' vs 'command_name' key mismatch
+
+        Once all users run fresh workflows with corrected code, this repair is unnecessary.
+        Target removal: After all active projects have been re-initialized or completed.
         """
         from .utils.regression_log import extract_issue_description, check_issue_resolved
-        
-        print("\n🔧 Repairing regression log entries by re-analyzing models...")
+
+        self.logger.log("\n🔧 Repairing previous regression log entries before resuming")
         repaired_count = 0
-        
-        for entry in self.context.regression_log.entries:
-            # Skip if issue is already properly extracted (not "No issues")
-            if entry.issue and entry.issue != "No issues":
-                continue
-            
-            # Get the model file for this iteration
-            model_file = self.context.file_manager.get_alloy_model_path(entry.iteration_id)
+
+        # Cache analysis results to avoid re-analyzing the same model multiple times
+        analysis_cache = {}  # iteration_id -> analysis_dict
+
+        async def get_cached_analysis(iteration_id: int):
+            """Get analysis from cache or run analyzer and cache result."""
+            if iteration_id in analysis_cache:
+                return analysis_cache[iteration_id]
+
+            model_file = self.context.file_manager.get_alloy_model_path(iteration_id)
             if not model_file.exists():
-                print(f"  ⚠ Iteration {entry.iteration_id}: Model file not found, skipping")
-                continue
-            
-            # Re-run analyzer on this model
+                analysis_cache[iteration_id] = None
+                return None
+
             try:
                 results = await self.run_analyzer.run(model_file)
                 analysis = results.get('analysis', {})
-                
-                # Re-extract issue
-                new_issue = extract_issue_description(analysis)
-                
-                if new_issue != entry.issue:
-                    print(f"  Iteration {entry.iteration_id}: '{entry.issue}' → '{new_issue}'")
-                    entry.issue = new_issue
-                    repaired_count += 1
-                    
-                    # Also re-check resolved_target_issue for this entry
-                    if entry.iteration_id > 0:
-                        prev_entry = self.context.regression_log.get_entry(entry.iteration_id - 1)
-                        if prev_entry:
-                            # Get previous results by re-analyzing previous model
-                            prev_model_file = self.context.file_manager.get_alloy_model_path(entry.iteration_id - 1)
-                            if prev_model_file.exists():
-                                prev_results = await self.run_analyzer.run(prev_model_file)
-                                prev_analysis = prev_results.get('analysis', {})
-                                
-                                entry.resolved_target_issue = check_issue_resolved(
-                                    current_analysis=analysis,
-                                    previous_analysis=prev_analysis,
-                                    current_entry=entry,
-                                    previous_entry=prev_entry
-                                )
-                
-            except Exception as e:
-                print(f"  ⚠ Iteration {entry.iteration_id}: Failed to re-analyze - {e}")
+                analysis_cache[iteration_id] = analysis
+                return analysis
+            except Exception:
+                analysis_cache[iteration_id] = None
+                return None
+
+        for entry in self.context.regression_log.entries:
+            # Skip if issue is already properly extracted (not "No issues" and no "unknown" counterexamples)
+            needs_repair = False
+            if not entry.issue or entry.issue == "No issues":
+                needs_repair = True
+            elif "counterexample: unknown" in entry.issue:
+                # Fix old entries with "unknown" counterexample names (from command vs command_name bug)
+                needs_repair = True
+
+            if not needs_repair:
                 continue
-        
+
+            # Get analysis (cached or fresh)
+            analysis = await get_cached_analysis(entry.iteration_id)
+            if analysis is None:
+                continue
+
+            # Re-extract issue
+            new_issue = extract_issue_description(analysis)
+
+            if new_issue != entry.issue:
+                old_issue = entry.issue
+                entry.issue = new_issue
+                repaired_count += 1
+                self.logger.log(f"[REPAIR] Iteration {entry.iteration_id}: '{old_issue}' → '{new_issue}'")
+
+                # Also re-check resolved_target_issue for this entry
+                if entry.iteration_id > 0:
+                    prev_entry = self.context.regression_log.get_entry(entry.iteration_id - 1)
+                    if prev_entry:
+                        # Get previous analysis (cached or fresh)
+                        prev_analysis = await get_cached_analysis(entry.iteration_id - 1)
+                        if prev_analysis is not None:
+                            entry.resolved_target_issue = check_issue_resolved(
+                                current_analysis=analysis,
+                                previous_analysis=prev_analysis,
+                                current_entry=entry,
+                                previous_entry=prev_entry
+                            )
+
         if repaired_count > 0:
             self.context.regression_log._save_to_file()
-            print(f"✓ Repaired {repaired_count} regression log entries")
-        else:
-            print("✓ No repairs needed")
+            self.logger.log(f"✓ Repaired {repaired_count} regression log entries")
 
     async def _step1_analyze_requirements(self, raw_requirements: str):
         """Step 1: Analyze initial requirements."""
@@ -482,6 +593,13 @@ class AutoREWorkflow:
             )
 
             if user_input and user_input.strip():
+                # Log user input
+                self.logger.log("\n" + "=" * 80)
+                self.logger.log("USER INPUT - Step 2 Clarifications")
+                self.logger.log("=" * 80)
+                self.logger.log(user_input)
+                self.logger.log("=" * 80 + "\n")
+
                 # Incorporate clarifications into requirements document
                 print("  Updating requirements with clarifications...")
                 updated_requirements = await self.incorporate_clarifications.run(
@@ -504,6 +622,7 @@ class AutoREWorkflow:
                     context="Step 2 clarification"
                 )
             else:
+                self.logger.log("✓ No clarifications provided (Step 2)")
                 print("✓ No clarifications provided")
         else:
             print("✓ No clarifications needed")
@@ -562,13 +681,13 @@ class AutoREWorkflow:
         current_verification = self._create_verification_snapshot(results)
         entry = self.context.regression_log.get_entry(self.context.iteration.current)
         
-        self._debug(f"[DEBUG] Step 4 - Looking for entry at iteration {self.context.iteration.current}")
-        self._debug(f"[DEBUG] Entry found: {entry is not None}")
+        self.logger.log(f"[DEBUG] Step 4 - Looking for entry at iteration {self.context.iteration.current}")
+        self.logger.log(f"[DEBUG] Entry found: {entry is not None}")
         
         # If no entry exists for current iteration (e.g., iteration 0), create one
         if not entry:
             from .utils.regression_log import RegressionLogEntry, VerificationResult, ImpactAnalysis
-            self._debug(f"[DEBUG] Creating entry for iteration {self.context.iteration.current} (first time evaluation)")
+            self.logger.log(f"[DEBUG] Creating entry for iteration {self.context.iteration.current} (first time evaluation)")
             
             model_file = self.context.file_manager.get_alloy_model_path(self.context.iteration.current)
             entry = RegressionLogEntry(
@@ -604,11 +723,11 @@ class AutoREWorkflow:
         prev_analysis = prev_results.get('analysis', {}) if prev_results else None
         
         # Debug: Check what's in results
-        self._debug(f"[DEBUG] Results structure check:")
-        self._debug(f"  has_syntax_errors in analysis: {current_analysis.get('has_syntax_errors', 'NOT FOUND')}")
-        self._debug(f"  syntax_errors count: {len(current_analysis.get('syntax_errors', []))}")
+        self.logger.log(f"[DEBUG] Results structure check:")
+        self.logger.log(f"  has_syntax_errors in analysis: {current_analysis.get('has_syntax_errors', 'NOT FOUND')}")
+        self.logger.log(f"  syntax_errors count: {len(current_analysis.get('syntax_errors', []))}")
         if current_analysis.get('syntax_errors'):
-            self._debug(f"  first error line: {current_analysis['syntax_errors'][0].get('line', 'NO LINE')}")
+            self.logger.log(f"  first error line: {current_analysis['syntax_errors'][0].get('line', 'NO LINE')}")
         
         entry.issue = extract_issue_description(current_analysis)
         
@@ -619,10 +738,66 @@ class AutoREWorkflow:
         else:
             entry.syntax_error_context = None
 
+        # Post-analysis chain, step 1 of 4: ErrorNormalizer.
+        # Convert the raw Alloy error into a stable, location-independent
+        # signature and store it on this iteration's regression-log entry.
+        entry.error_signature = self.error_normalizer.run(
+            analysis=current_analysis,
+            model_path=str(model_file)
+        )
+        if entry.error_signature:
+            self.logger.log(
+                f"[DEBUG] ErrorNormalizer signature: {entry.error_signature.get('normalized_signature')}"
+            )
+
+        # A syntax error must always yield a normalized signature - resolution and
+        # lesson tracking depend on it (a missing signature forces the conservative
+        # "not resolved" fallback in check_issue_resolved / issues_match). Flag it
+        # loudly if the normalizer produced nothing, but keep the run going.
+        has_syntax_error = (entry.current_result is not None
+                            and entry.current_result.syntax == "Error")
+        normalized_sig = (entry.error_signature or {}).get('normalized_signature')
+        if has_syntax_error and not normalized_sig:
+            self.logger.log(
+                f"❌ [ERROR] ErrorNormalizer produced no signature for a syntax error "
+                f"at iteration {self.context.iteration.current} (issue: {entry.issue!r}). "
+                f"Resolution/lesson tracking falls back to conservative 'not resolved'."
+            )
+
+        # Post-analysis chain, step 2 of 4: IssuePatternTracker.
+        # Classify the current error against recent iterations and store it.
+        entry.issue_pattern = self.issue_pattern_tracker.run(
+            current_iteration=self.context.iteration.current,
+            current_signature=entry.error_signature,
+            regression_log_entries=self.context.regression_log.entries
+        )
+        self.logger.log(
+            f"[DEBUG] IssuePatternTracker: pattern_type={entry.issue_pattern.get('pattern_type')}, "
+            f"repeat_exact={entry.issue_pattern.get('repeat_count_exact')}, "
+            f"repeat_root_family={entry.issue_pattern.get('repeat_count_root_family')}"
+        )
+
+        # Post-analysis chain, step 3 of 4: SemanticIssueTracker.
+        # Track persistence of unsat predicates and assertion counterexamples
+        # across syntactically-valid iterations; flags issues that require
+        # escalation to requirements diagnosis instead of more model repair.
+        entry.semantic_issue_persistence = self.semantic_issue_tracker.run(
+            current_iteration=self.context.iteration.current,
+            current_result=entry.current_result,
+            regression_log_entries=self.context.regression_log.entries
+        )
+        if entry.semantic_issue_persistence.get('issues'):
+            self.logger.log(
+                f"[DEBUG] SemanticIssueTracker: "
+                f"{len(entry.semantic_issue_persistence['issues'])} tracked issue(s), "
+                f"escalation_required={entry.semantic_issue_persistence.get('escalation_required')}, "
+                f"escalated={entry.semantic_issue_persistence.get('escalated_issues')}"
+            )
+
         # Debug logging
-        self._debug(f"[DEBUG] Step 4 - Iteration: {self.context.iteration.current}")
-        self._debug(f"[DEBUG] Entry found/created for iteration {self.context.iteration.current}: True")
-        self._debug(f"[DEBUG] Extracted issue: {entry.issue}")
+        self.logger.log(f"[DEBUG] Step 4 - Iteration: {self.context.iteration.current}")
+        self.logger.log(f"[DEBUG] Entry found/created for iteration {self.context.iteration.current}: True")
+        self.logger.log(f"[DEBUG] Extracted issue: {entry.issue}")
 
         # Check if target issue from previous iteration is resolved
         entry.resolved_target_issue = check_issue_resolved(
@@ -632,7 +807,120 @@ class AutoREWorkflow:
             previous_entry=prev_entry
         )
 
-        self._debug(f"[DEBUG] Resolved target issue: {entry.resolved_target_issue}")
+        self.logger.log(f"[DEBUG] Resolved target issue: {entry.resolved_target_issue}")
+
+        # A syntax error fixed into a compilable model is a DEFINITIVE
+        # resolution. Alloy could not compile the previous model, so the syntax
+        # error genuinely disappears the moment the model compiles - unlike
+        # semantic issues (unsat predicates / counterexamples), which oscillate
+        # across iterations. Such a resolution needs no probation window:
+        # confirm it immediately and store the fix's lesson right away (below).
+        prev_had_syntax_error = bool(prev_analysis and prev_analysis.get('syntax_errors'))
+        curr_compiles = (entry.current_result is not None
+                         and entry.current_result.syntax == "OK")
+        syntax_definitively_resolved = (
+            entry.resolved_target_issue is True
+            and prev_had_syntax_error
+            and curr_compiles
+        )
+
+        # A single absent iteration only proves TEMPORARY absence (oscillating
+        # errors come back): mark the resolution provisional. It is confirmed
+        # or reverted by update_resolution_statuses() over later iterations.
+        # The one exception is a syntax error that now compiles - that is
+        # confirmed on the spot (see above).
+        if entry.resolved_target_issue is True and prev_entry and prev_entry.issue:
+            if syntax_definitively_resolved:
+                entry.resolution_status = {
+                    'status': 'resolved_confirmed',
+                    'target_issue': prev_entry.issue,
+                    'target_signature': (prev_entry.error_signature or {}).get('normalized_signature'),
+                    'target_fingerprint': (prev_entry.error_signature or {}).get('detail_fingerprint'),
+                    'confirmed_at': self.context.iteration.current,
+                }
+                self.logger.log(
+                    f"[DEBUG] Syntax error fixed - resolution CONFIRMED immediately "
+                    f"(model compiles; target: '{prev_entry.issue[:80]}')"
+                )
+            else:
+                entry.resolution_status = {
+                    'status': 'temporarily_absent',
+                    'target_issue': prev_entry.issue,
+                    'target_signature': (prev_entry.error_signature or {}).get('normalized_signature'),
+                    'target_fingerprint': (prev_entry.error_signature or {}).get('detail_fingerprint'),
+                }
+                self.logger.log(
+                    f"[DEBUG] Resolution marked temporarily_absent "
+                    f"(target: '{prev_entry.issue[:80]}')"
+                )
+
+        # Advance provisional resolutions from earlier iterations: confirm
+        # those whose target stayed absent long enough, revert (and return to
+        # failed-fix history) those whose target issue recurred.
+        from .utils.regression_log import update_resolution_statuses
+        update_resolution_statuses(
+            entries=self.context.regression_log.entries,
+            current_iteration=self.context.iteration.current,
+            required_clean_iterations=3,
+            logger=self.logger
+        )
+
+        # Confirm or discard any staged lessons from the previous iteration's
+        # feedback/fix, now that we know whether the issue they targeted was resolved
+        # First advance lessons already on probation: discard any whose target
+        # issue recurred (oscillation), store those that stayed resolved for
+        # the required number of consecutive iterations.
+        confirmed_items, _discarded_items = self.lesson_probation.evaluate(
+            current_iteration=self.context.iteration.current,
+            current_issue=entry.issue,
+            current_signature=(entry.error_signature or {}).get('normalized_signature'),
+            current_fingerprint=(entry.error_signature or {}).get('detail_fingerprint'),
+            syntax_ok=(entry.current_result.syntax == "OK")
+        )
+        self._store_confirmed_lessons(confirmed_items)
+
+        # Then move newly-resolved pending lessons onto probation (instead of
+        # storing them immediately - a single resolved iteration is not enough
+        # evidence when errors oscillate A,B,A,B across iterations).
+        for pending_attr in ('pending_evaluator_feedback_lesson', 'pending_re_fix_lesson'):
+            pending = getattr(self.context, pending_attr)
+            if pending is None:
+                continue
+            if entry.resolved_target_issue is True:
+                src_entry = self.context.regression_log.get_entry(pending['source_iteration'])
+                if syntax_definitively_resolved:
+                    # The fix turned a non-compiling model into a compilable
+                    # one - a definitive syntax resolution. Store the lesson
+                    # from the iteration that generated the fix and correct
+                    # feedback immediately; no probation window is needed.
+                    self._store_confirmed_lessons([{'pending': pending}])
+                    self.logger.log(
+                        f"✅ Lesson from {pending['agent_name']}/{pending['action_name']} "
+                        f"(iteration {pending['source_iteration']}) stored immediately - "
+                        f"syntax error fixed, model now compiles"
+                    )
+                else:
+                    self.lesson_probation.add(
+                        pending=pending,
+                        target_issue=src_entry.issue if src_entry else '',
+                        target_signature=((src_entry.error_signature or {}).get('normalized_signature')
+                                          if src_entry else None),
+                        target_fingerprint=((src_entry.error_signature or {}).get('detail_fingerprint')
+                                            if src_entry else None),
+                        resolved_at_iteration=self.context.iteration.current
+                    )
+                    self.logger.log(
+                        f"⏳ Lesson from {pending['agent_name']}/{pending['action_name']} "
+                        f"(iteration {pending['source_iteration']}) placed on probation - stored only if "
+                        f"the issue stays resolved for {self.lesson_probation.required_clean_iterations} "
+                        f"consecutive iterations"
+                    )
+            else:
+                self.logger.log(
+                    f"🗑️ Discarding unconfirmed lesson from {pending['agent_name']}/{pending['action_name']} "
+                    f"(iteration {pending['source_iteration']})"
+                )
+            setattr(self.context, pending_attr, None)
 
         # Detect if same fix approach has been tried multiple times for this issue
         if entry.issue and entry.resolved_target_issue is False:
@@ -640,10 +928,27 @@ class AutoREWorkflow:
                 current_issue=entry.issue,
                 regression_log_entries=self.context.regression_log.entries
             )
-            self._debug(f"[DEBUG] Pattern detected: {entry.fix_pattern_detected}")
+            self.logger.log(f"[DEBUG] Pattern detected: {entry.fix_pattern_detected}")
+
+        # Guarantee an outcome classification: InterpretResults is skipped on
+        # syntax-error iterations (and can fail to produce one on semantic
+        # iterations), which previously left entries stuck at "pending".
+        # Derive a deterministic classification now; the LLM classification
+        # from InterpretResults overwrites it later when available.
+        if entry.outcome_classification == "pending":
+            from .utils.regression_log import derive_outcome_classification
+            entry.outcome_classification = derive_outcome_classification(
+                has_syntax_errors=current_analysis.get('has_syntax_errors', False),
+                resolved_target_issue=entry.resolved_target_issue,
+                has_previous_iteration=prev_entry is not None,
+                current_issue=entry.issue
+            )
+            self.logger.log(
+                f"[DEBUG] Outcome classification (deterministic): {entry.outcome_classification}"
+            )
 
         self.context.regression_log._save_to_file()
-        self._debug(f"[DEBUG] Regression log saved with {len(self.context.regression_log.entries)} entries")
+        self.logger.log(f"[DEBUG] Regression log saved with {len(self.context.regression_log.entries)} entries")
 
         # Check for syntax errors to decide whether to call InterpretResults
         analysis = results.get('analysis', {})
@@ -675,7 +980,7 @@ class AutoREWorkflow:
 
             questions_from_interpretation = parse_user_questions(
                 interpretation,
-                section_name="USER QUESTIONS"
+                section_name="BLOCKING QUESTIONS"
             )
 
             if questions_from_interpretation:
@@ -715,6 +1020,157 @@ class AutoREWorkflow:
         hard_metrics_pass = no_syntax_errors and no_counterexamples and all_positive_runs_satisfied
 
         return hard_metrics_pass
+
+    def _run_semantic_diagnostics(
+        self,
+        semantic_escalation: dict,
+        semantic_persistence: Optional[dict],
+        model_text: Optional[str],
+    ) -> None:
+        """
+        Rungs 2-3 of the semantic escalation ladder (deterministic, LLM-free).
+
+        For each escalated UNSAT predicate, re-run it alone at enlarged bounds
+        (rung 2: bounded-search artifact?) and, if still UNSAT, delta-debug the
+        fact set to the minimal blocking facts / implicated requirement IDs
+        (rung 3). The measured evidence is appended to the escalation
+        directive; the interpretation rules live in the
+        PersistentIssueEscalation prompt section. Best-effort: any failure
+        leaves the escalation unchanged.
+        """
+        try:
+            escalated = set(semantic_escalation.get('escalated_issues') or [])
+            unsat_predicates = [
+                issue.get('name')
+                for issue in ((semantic_persistence or {}).get('issues') or [])
+                if issue.get('name') in escalated
+                and issue.get('kind') == 'unsat_predicate'
+            ]
+            if not unsat_predicates or not model_text:
+                return
+
+            from src.utils.alloy_executor import AlloyExecutor
+            from src.utils.semantic_diagnostics import (
+                diagnose_unsat_predicates,
+                make_alloy_sat_checker,
+            )
+            diag_dir = Path(
+                f"Output/AnalyzerOutput/{self.context.iteration.current}/diagnostics"
+            )
+            check = make_alloy_sat_checker(
+                AlloyExecutor(), diag_dir, logger=self.logger
+            )
+            print(
+                f"  🔬 Deterministic diagnosis (scope sweep + fact localization) "
+                f"for: {', '.join(unsat_predicates)}"
+            )
+            diagnosis = diagnose_unsat_predicates(
+                model_text, unsat_predicates, check, logger=self.logger
+            )
+            if diagnosis['directive_text']:
+                semantic_escalation['directive'] += "\n" + diagnosis['directive_text']
+                semantic_escalation['diagnostics'] = diagnosis['results']
+        except Exception as e:
+            self.logger.log(f"[SEMANTIC_DIAGNOSTICS] skipped: {e}")
+
+    def _apply_requirement_gate(
+        self,
+        feedback: str,
+        gate_decision: Optional[str],
+        proposed_updates: Optional[str],
+        semantic_escalation: dict,
+        current_entry,
+        qa_index: int,
+    ) -> str:
+        """
+        Rung 5 of the semantic escalation ladder: enforce the user's decision
+        on the requirement updates proposed for persistent semantic issues.
+
+        rejected              -> strip REQUIREMENT UPDATES deterministically so
+                                 _step7 cannot apply them; record the rejection
+                                 as a confirmed Q&A record.
+        accepted / edited     -> record the decision (confirmed) and store a
+                                 REGENERATE_PREDICATES escalation on the entry
+                                 so _step8 directs the RE agent to rebuild the
+                                 affected constructs from the updated
+                                 requirements instead of patching.
+        provisional (timeout) -> like accepted, but recorded as a provisional
+                                 agent assumption in the Q&A database.
+
+        Returns the (possibly stripped) feedback text.
+        """
+        if not gate_decision:
+            return feedback
+        try:
+            from src.utils.qa_database import QARecord, create_qa_id
+            from src.utils.repair_plateau_detector import (
+                build_regeneration_escalation,
+                remove_requirement_updates,
+            )
+
+            escalated_names = ', '.join(
+                semantic_escalation.get('escalated_issues') or [])
+            question = (
+                f"Confirm the requirement update(s) proposed for persistent "
+                f"issue(s) {escalated_names}:\n{(proposed_updates or '').strip()}"
+            )
+
+            if gate_decision == 'rejected':
+                self.context.qa_database.add_record(QARecord(
+                    id=create_qa_id(self.context.iteration.current, qa_index),
+                    iteration=self.context.iteration.current,
+                    question=question,
+                    answer="User REJECTED the proposed requirement update(s); "
+                           "the requirements remain unchanged.",
+                    source="user",
+                    context="requirement-change decision gate",
+                    status="confirmed",
+                ))
+                self.logger.log(
+                    "[REQUIREMENT_GATE] rejected - REQUIREMENT UPDATES section "
+                    "stripped from feedback"
+                )
+                print("  🚫 Updates rejected - requirements stay unchanged")
+                return remove_requirement_updates(feedback)
+
+            # accepted / edited / provisional -> targeted regeneration
+            answer = {
+                'accepted': "User ACCEPTED the proposed requirement update(s).",
+                'edited': "User ACCEPTED the requirement update(s) with edits "
+                          "(see the refined feedback's REQUIREMENT UPDATES).",
+                'provisional': "No user response - requirement update(s) applied "
+                               "as a PROVISIONAL assumption pending confirmation.",
+            }.get(gate_decision, gate_decision)
+            self.context.qa_database.add_record(QARecord(
+                id=create_qa_id(self.context.iteration.current, qa_index),
+                iteration=self.context.iteration.current,
+                question=question,
+                answer=answer,
+                source="user" if gate_decision in ('accepted', 'edited') else "agent_assumption",
+                context="requirement-change decision gate",
+                status="provisional" if gate_decision == 'provisional' else "confirmed",
+            ))
+
+            regeneration = build_regeneration_escalation(
+                current_iteration=self.context.iteration.current,
+                semantic_escalation=semantic_escalation,
+                user_decision=gate_decision,
+                proposed_updates=proposed_updates,
+            )
+            if current_entry:
+                current_entry.repair_escalation = regeneration
+                self.context.regression_log._save_to_file()
+            self.logger.log(
+                f"[REQUIREMENT_GATE] {gate_decision} -> REGENERATE_PREDICATES "
+                f"for {regeneration['regenerate_targets']}"
+            )
+            print(
+                f"  ♻️  Regeneration escalation stored for: "
+                f"{', '.join(regeneration['regenerate_targets'])}"
+            )
+        except Exception as e:
+            self.logger.log(f"[REQUIREMENT_GATE] skipped: {e}")
+        return feedback
 
     async def _step5_6_generate_feedback_and_get_user_input(self) -> dict:
         """
@@ -786,39 +1242,96 @@ class AutoREWorkflow:
                 # Pass the full syntax_error dictionary for context comparison
                 current_syntax_error = first_error if isinstance(first_error, dict) else None
 
-                consecutive_same_errors = count_consecutive_same_syntax_errors(
+                # Post-analysis chain, step 4 of 4: RepairPlateauDetector.
+                # Turn the cross-iteration pattern classification into an
+                # escalation decision + evidence block for the Evaluator/RE prompts.
+                from src.utils.repair_plateau_detector import build_syntax_escalation
+                syntax_escalation = build_syntax_escalation(
+                    current_iteration=self.context.iteration.current,
+                    issue_pattern=current_entry.issue_pattern if current_entry else None,
+                    error_signature=current_entry.error_signature if current_entry else None,
+                    regression_log_entries=self.context.regression_log.entries
+                )
+                pattern_status = syntax_escalation['directive'] or (
+                    "No cross-iteration error pattern detected - this is the first "
+                    "occurrence of this error."
+                )
+                if current_entry:
+                    current_entry.repair_escalation = syntax_escalation
+                    self.context.regression_log._save_to_file()
+                if syntax_escalation['escalation_level'] > 0:
+                    self.logger.log(
+                        f"  🚨 Repair escalation: level {syntax_escalation['escalation_level']} "
+                        f"({syntax_escalation['strategy']})"
+                    )
+
+                error_counts = count_consecutive_same_syntax_errors(
                     self.context.regression_log.entries,
                     self.context.iteration.current,
                     current_issue,
-                    current_syntax_error
+                    current_syntax_error,
+                    window=7
                 )
 
-                max_failed_fixes = 5
-                if consecutive_same_errors >= max_failed_fixes:
-                    print(f"\n{'='*80}")
-                    print(f"❌ SYNTAX ERROR LIMIT REACHED")
-                    print(f"{'='*80}")
-                    print(f"The system has attempted to fix THE SAME syntax error {consecutive_same_errors} times")
-                    print(f"but the errors persist. This may indicate:")
-                    print(f"  - Misdiagnosis of the root cause")
-                    print(f"  - Alloy 6 syntax complexity beyond current capabilities")
-                    print(f"  - Model structure issues requiring redesign")
-                    print(f"\nCurrent syntax error:")
-                    print(f"  {error_message}")
-                    print(f"{'='*80}\n")
+                consecutive_count = error_counts['consecutive']
+                total_count = error_counts['total']
+
+                # Trigger user feedback if: 3 consecutive OR 4 total within the last 7 iterations
+                threshold_consecutive = 3
+                threshold_total = 4
+
+                if consecutive_count >= threshold_consecutive or total_count >= threshold_total:
+                    self.logger.log(f"\n{'='*80}")
+                    self.logger.log(f"❌ SYNTAX ERROR LIMIT REACHED")
+                    self.logger.log(f"{'='*80}")
+                    
+                    if consecutive_count >= threshold_consecutive:
+                        self.logger.log(f"The same syntax error has occurred {consecutive_count} times consecutively.")
+                    else:
+                        self.logger.log(f"The same syntax error has occurred {total_count} times within the last 7 iterations.")
+                    
+                    self.logger.log(f"Occurrences: {consecutive_count} consecutive, {total_count} total")
+                    self.logger.log(f"This may indicate:")
+                    self.logger.log(f"  - Misdiagnosis of the root cause")
+                    self.logger.log(f"  - Alloy 6 syntax complexity beyond current capabilities")
+                    self.logger.log(f"  - Model structure issues requiring redesign")
+                    self.logger.log(f"\nCurrent syntax error:")
+                    self.logger.log(f"  {error_message}")
+                    self.logger.log(f"{'='*80}\n")
 
                     user_input = self.cli.request_input(
                         prompt="Please provide guidance on how to fix the syntax error (or 'skip' to continue anyway):",
                         multiline=True
                     )
 
+                    # Log user input request and response
+                    trigger_reason = f"{consecutive_count} consecutive" if consecutive_count >= threshold_consecutive else f"{total_count} total"
+                    self.logger.log(f"\n⚠️  USER INPUT REQUESTED: Syntax error limit reached ({trigger_reason})")
+                    
                     if user_input and user_input.strip().lower() != 'skip':
-                        # User provided feedback - use it as the draft feedback
-                        draft_feedback = f"USER GUIDANCE (after {consecutive_same_errors} failed attempts):\n{user_input}"
-                        print("  ✓ User feedback received - will use for model update")
+                        # User provided feedback - refine with Evaluator
+                        self.logger.log("  ✓ User feedback received - refining with Evaluator...")
+
+                        # Call GenerateSyntaxRepairInstruction with user guidance
+                        draft_feedback = await self.generate_syntax_repair.run(
+                            code_snippet=code_snippet,
+                            error_message=error_message,
+                            alloy_model=alloy_model,
+                            user_guidance=user_input,
+                            pattern_status=pattern_status
+                        )
+
+                        self.logger.log("  ✓ Feedback refined based on user guidance")
+                        
+                        # Log the user's guidance (just to file, not console since user already knows what they typed)
+                        self.logger.log("USER PROVIDED GUIDANCE:")
+                        self.logger.log("-" * 80)
+                        self.logger.log(user_input)
+                        self.logger.log("-" * 80)
                     else:
                         # User skipped or no input - generate one more attempt
-                        print("  ⚠️  Proceeding with automated repair (may fail again)")
+                        self.logger.log("  ⚠️  Proceeding with automated repair (may fail again)")
+                        self.logger.log("USER RESPONSE: Skipped (no guidance provided)")
                         draft_feedback = None  # Will generate below
                 else:
                     draft_feedback = None  # Will generate below
@@ -828,117 +1341,298 @@ class AutoREWorkflow:
                     # Implement retry loop for syntax repair (max 3 rejected attempts)
                     max_retries = 3
                     retry_count = 0
-                    previous_failed_attempts = []  # List of {feedback, changes} dicts
+                    
+                    # Fetch failed syntax repair attempts from previous iterations
+                    # This prevents repeating the same repair across iterations
+                    # IMPORTANT: Only include attempts for the SAME error (same symbol)
+                    previous_failed_attempts = []  # Genuinely failed/unconfirmed prior repairs -> reject pool ("don't repeat")
+                    previous_successful_attempts = []  # Prior repairs that RESOLVED their target issue -> surfaced to LLM as known-good approaches
+
+                    # Track rejected attempts in THIS iteration (for debugging)
+                    current_iteration_rejected = []  # List of {feedback, reason, similarity_score, similar_to_attempt}
+
+                    # Extract current error's symbol for matching
+                    current_symbol = ""
+                    if current_entry and current_entry.issue and " in " in current_entry.issue:
+                        current_symbol = current_entry.issue.split(" in ", 1)[1].strip()
+
+                    # Use index to quickly find iterations with the same symbol,
+                    # merged with the IssuePatternTracker's signature matches
+                    # (location-independent, so it catches the same error even
+                    # when the issue string / symbol extraction differs).
+                    matching_iterations = set()
+                    if current_symbol:
+                        matching_iterations.update(
+                            self.context.regression_log.get_iterations_for_symbol(current_symbol)
+                        )
+                    if current_entry and current_entry.issue_pattern:
+                        matching_iterations.update(
+                            current_entry.issue_pattern.get('matched_exact_iterations', []) or []
+                        )
+                        matching_iterations.update(
+                            current_entry.issue_pattern.get('matched_root_family_iterations', []) or []
+                        )
+
+                    if matching_iterations:
+                        # Look through matching iterations (excluding current)
+                        for prev_iter in sorted(matching_iterations):
+                            if prev_iter >= self.context.iteration.current:
+                                continue  # Skip current and future iterations
+
+                            # Get the feedback from that iteration
+                            prev_feedback = self.context.artifacts.get_feedback(prev_iter)
+
+                            if prev_feedback and "[REPAIR INSTRUCTIONS]" in prev_feedback:
+                                # Get timestamp + resolution status for this iteration from regression log
+                                prev_timestamp = None
+                                prev_entry = next((e for e in self.context.regression_log.entries if e.iteration_id == prev_iter), None)
+                                if prev_entry and hasattr(prev_entry, 'timestamp'):
+                                    prev_timestamp = prev_entry.timestamp
+
+                                attempt_record = {
+                                    'feedback': prev_feedback,
+                                    'changes': f'(From iteration {prev_iter})',
+                                    'iteration': prev_iter,
+                                    'timestamp': prev_timestamp
+                                }
+
+                                # A repair whose target issue was RESOLVED is a known-good
+                                # approach, NOT a failure - it must not populate the reject
+                                # pool that drives dedup rejection. The same error family can
+                                # recur in a different block (a new site, not the same fix
+                                # failing), so a proven fix should be re-offered to the LLM,
+                                # not forbidden. Only genuinely failed or unconfirmed attempts
+                                # (resolved_target_issue is False or None) are "don't repeat".
+                                if prev_entry is not None and prev_entry.resolved_target_issue is True:
+                                    previous_successful_attempts.append(attempt_record)
+                                else:
+                                    previous_failed_attempts.append(attempt_record)
+
+                    if previous_failed_attempts:
+                        self.logger.log(f"  📋 Loaded {len(previous_failed_attempts)} previously FAILED syntax repair attempt(s) for '{current_symbol}' (reject pool - do not repeat)")
+                    if previous_successful_attempts:
+                        self.logger.log(f"  ✅ Loaded {len(previous_successful_attempts)} previously RESOLVED syntax repair attempt(s) for '{current_symbol}' (known-good - surfaced to LLM)")
 
                     while retry_count < max_retries:
                         # Show cross-iteration counter (how many iterations for this same error)
-                        if consecutive_same_errors > 1:
-                            print(f"  🔄 Cross-iteration fix attempt: {consecutive_same_errors}/{max_failed_fixes} for this error")
+                        if consecutive_count > 1 or total_count > 1:
+                            self.logger.log(f"  🔄 Cross-iteration fix attempt: {consecutive_count} consecutive, {total_count} total for this error")
                         
                         # Show per-iteration retry counter (rejected attempts in this iteration)
                         if retry_count > 0:
-                            print(f"  🔄 Rejected attempts in this iteration: {retry_count}/{max_retries}")
+                            self.logger.log(f"  🔄 Rejected attempts in this iteration: {retry_count}/{max_retries}")
                         
-                        print(f"  🔄 Generating syntax repair...")
+                        self.logger.log(f"  🔄 Generating syntax repair...")
 
                         # Generate syntax repair instructions
                         feedback = await self.generate_syntax_repair.run(
                             code_snippet=code_snippet,
                             error_message=error_message,
                             alloy_model=alloy_model,
-                            previous_failed_attempts=previous_failed_attempts
+                            previous_failed_attempts=previous_failed_attempts,
+                            known_good_attempts=previous_successful_attempts,
+                            pattern_status=pattern_status
                         )
 
                         # Check if feedback is too similar to previous attempts
                         if previous_failed_attempts:
-                            from src.utils.regression_log import is_feedback_too_similar, save_rejected_feedback, extract_repair_instructions
+                            from src.utils.regression_log import is_feedback_too_similar, save_rejected_feedback, extract_fix_intent_and_repair_instructions
 
-                            # Extract REPAIR INSTRUCTIONS section from current feedback
-                            current_instructions = extract_repair_instructions(feedback)
+                            # Extract FIX INTENT + REPAIR INSTRUCTIONS from current feedback
+                            current_instructions = extract_fix_intent_and_repair_instructions(feedback)
 
-                            # Extract REPAIR INSTRUCTIONS from previous feedback texts
+                            # Extract FIX INTENT + REPAIR INSTRUCTIONS from previous feedback texts
                             previous_feedbacks = [attempt['feedback'] for attempt in previous_failed_attempts]
-                            previous_instructions = [extract_repair_instructions(fb) for fb in previous_feedbacks]
+                            previous_instructions = [extract_fix_intent_and_repair_instructions(fb) for fb in previous_feedbacks]
 
-                            # Check similarity based on REPAIR INSTRUCTIONS only
+                            # Check similarity based on FIX INTENT + REPAIR INSTRUCTIONS
                             is_similar, similar_index, similarity_score = is_feedback_too_similar(
                                 new_feedback=current_instructions,
                                 previous_feedbacks=previous_instructions,
-                                threshold=0.80
+                                threshold=0.85  # Raised from 0.75 to reduce false positives on genuinely different fixes sharing domain vocabulary
                             )
 
+                            # Deterministic guard on top of text similarity:
+                            # reject a repair whose NORMALIZED signature (same
+                            # operation family on the same target) matches a
+                            # previously failed attempt - catches rephrased
+                            # repeats that slip under the text threshold
+                            if not is_similar:
+                                from src.utils.repair_plateau_detector import normalize_repair
+                                err_sig = current_entry.error_signature if current_entry else None
+                                candidate_sig = normalize_repair(feedback, error_signature=err_sig)['normalized_signature']
+                                for prev_idx, prev_fb in enumerate(previous_feedbacks):
+                                    prev_sig = normalize_repair(prev_fb, error_signature=err_sig)['normalized_signature']
+                                    if prev_sig == candidate_sig:
+                                        is_similar, similar_index, similarity_score = True, prev_idx, 1.0
+                                        self.logger.log(
+                                            f"  ⚠️  Repair signature '{candidate_sig}' matches a "
+                                            f"previously failed attempt - rejecting"
+                                        )
+                                        break
+
                             if is_similar:
-                                print(f"  ⚠️  Feedback too similar to attempt {similar_index + 1} (score: {similarity_score:.4f})")
+                                # Get metadata about the similar feedback
+                                similar_attempt = previous_failed_attempts[similar_index]
+                                similar_source = ""
+                                similar_timestamp_str = ""
+                                
+                                if 'iteration' in similar_attempt:
+                                    # Similar to feedback from a previous iteration
+                                    similar_iteration = similar_attempt['iteration']
+                                    if similar_iteration < self.context.iteration.current:
+                                        similar_source = f"iteration {similar_iteration}"
+                                    else:
+                                        similar_source = f"current iteration attempt {similar_index + 1}"
+                                    
+                                    # Get timestamp of the similar feedback
+                                    if 'timestamp' in similar_attempt and similar_attempt['timestamp']:
+                                        similar_timestamp_str = similar_attempt['timestamp']
+                                elif 'attempt_number' in similar_attempt:
+                                    # Similar to feedback from current iteration retry
+                                    similar_source = f"current iteration attempt {similar_attempt['attempt_number']}"
+                                    
+                                    # Get timestamp of the similar feedback
+                                    if 'timestamp' in similar_attempt and similar_attempt['timestamp']:
+                                        similar_timestamp_str = similar_attempt['timestamp']
+                                else:
+                                    # Fallback
+                                    similar_source = f"previous attempt {similar_index + 1}"
+                                
+                                # Import datetime for current timestamp
+                                from datetime import datetime
+                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                                
+                                # Build detailed reason with timestamp of the similar feedback and similarity score
+                                score_str = f"{similarity_score:.4f}" if similarity_score is not None else "N/A"
+                                if similar_timestamp_str:
+                                    detailed_reason = f"Too similar to feedback from {similar_source} (created: {similar_timestamp_str}, similarity: {score_str})"
+                                else:
+                                    detailed_reason = f"Too similar to feedback from {similar_source} (similarity: {score_str})"
+                                
+                                self.logger.log(f"  ⚠️  {detailed_reason}")
                             
                                 # Save rejected feedback
                                 save_rejected_feedback(
                                     feedback=feedback,
                                     iteration=self.context.iteration.current,
-                                    reason=f"Too similar to previous attempt {similar_index + 1}",
+                                    reason=detailed_reason,
                                     similarity_score=similarity_score,
                                     similar_to_attempt=similar_index + 1
                                 )
 
+                                # Track rejected attempt in current iteration
+                                current_iteration_rejected.append({
+                                    'feedback': feedback,
+                                    'reason': detailed_reason,
+                                    'similarity_score': similarity_score,
+                                    'similar_to_attempt': similar_index + 1,
+                                    'similar_source': similar_source,
+                                    'similar_timestamp': similar_timestamp_str,
+                                    'attempt_number': retry_count + 1,
+                                    'timestamp': timestamp
+                                })
+
                                 # Add to failed attempts (for next iteration)
                                 previous_failed_attempts.append({
                                     'feedback': feedback,
-                                    'changes': '(Rejected before execution - too similar)'
+                                    'changes': '(Rejected before execution - too similar)',
+                                    'attempt_number': retry_count + 1,
+                                    'timestamp': timestamp
                                 })
 
                                 retry_count += 1
 
                                 # Check if we've exhausted retries
                                 if retry_count >= max_retries:
-                                    print(f"  ❌ Maximum retries ({max_retries}) reached - asking user for help")
-                                    print("\n" + "=" * 80)
-                                    print("The Evaluator has attempted to fix the syntax error 3 times,")
-                                    print("but all attempts were too similar to previous failed approaches.")
-                                    print("=" * 80)
-                                    print(f"\nLatest rejected feedback:\n{feedback}\n")
-                                    print("=" * 80 + "\n")
+                                    self.logger.log(f"  ❌ Maximum retries ({max_retries}) reached - asking user for help")
+                                    self.logger.log("\n" + "=" * 80)
+                                    self.logger.log("The Evaluator has attempted to fix the syntax error 3 times,")
+                                    self.logger.log("but all attempts were too similar to previous failed approaches.")
+                                    self.logger.log("=" * 80)
+                                    
+                                    # Display ALL rejected attempts from this iteration
+                                    self.logger.log(f"\nAll {len(current_iteration_rejected)} rejected feedback attempts:\n")
+                                    for idx, rejected in enumerate(current_iteration_rejected, 1):
+                                        self.logger.log(f"\n--- REJECTED ATTEMPT {idx} ---")
+                                        self.logger.log(f"Reason: {rejected['reason']}")
+                                        self.logger.log(f"\nFeedback:\n{rejected['feedback']}\n")
+                                        self.logger.log("-" * 80)
+                                    
+                                    self.logger.log("=" * 80 + "\n")
                                 
                                     user_input = self.cli.request_input(
                                         prompt="Please provide guidance on how to fix the syntax error:",
                                         multiline=True
                                     )
 
+                                    # Log user input request and response
+                                    self.logger.log(f"\n⚠️  USER INPUT REQUESTED: All {max_retries} syntax repair attempts rejected (too similar)")
+                                    
                                     if user_input and user_input.strip():
-                                        # User provided feedback - use it as the draft feedback
-                                        draft_feedback = f"USER GUIDANCE:\n{user_input}\n\nEvaluator's last attempt:\n{feedback}"
-                                        print("  ✓ User feedback received - will use for model update")
+                                        # User provided feedback - refine with Evaluator
+                                        self.logger.log("  ✓ User feedback received - refining with Evaluator...")
+
+                                        # Log the user's guidance
+                                        self.logger.log("USER PROVIDED GUIDANCE:")
+                                        self.logger.log("-" * 80)
+                                        self.logger.log(user_input)
+                                        self.logger.log("-" * 80)
+
+                                        # Call GenerateSyntaxRepairInstruction again with user guidance
+                                        draft_feedback = await self.generate_syntax_repair.run(
+                                            code_snippet=code_snippet,
+                                            error_message=error_message,
+                                            alloy_model=alloy_model,
+                                            previous_failed_attempts=previous_failed_attempts,
+                                            known_good_attempts=previous_successful_attempts,
+                                            user_guidance=user_input,
+                                            pattern_status=pattern_status
+                                        )
+
+                                        self.logger.log("  ✓ Feedback refined based on user guidance")
                                     else:
                                         # User didn't provide feedback - use the last attempt anyway
                                         draft_feedback = feedback
-                                        print("  ⚠️  No user feedback - using last attempt")
+                                        self.logger.log("  ⚠️  No user feedback - using last attempt")
+                                        self.logger.log("USER RESPONSE: No guidance provided (using Evaluator's last attempt)")
                                 
                                     break
                                 else:
                                     # Continue retry loop
-                                    print(f"  🔄 Retrying with different approach...")
+                                    self.logger.log(f"  🔄 Retrying with different approach...")
                                     continue
-                    
+
                         # Feedback is different (or first attempt) - accept it
-                        print(f"  ✓ Feedback accepted (unique approach)")
+                        self.logger.log(f"  ✓ Feedback accepted (unique approach)")
                         draft_feedback = feedback
                         break
 
-                    # End of retry loop
-                    print("✓ Syntax repair instructions generated")
+                    # End of retry loop (feedback accepted or max retries hit with user input)
 
                 # For syntax repair, skip Q&A and user review - store feedback directly
-                # Store feedback
-                self.context.artifacts.store_feedback(
-                    self.context.iteration.current,
-                    draft_feedback
-                )
+                # Store feedback as official
+                official_feedback = draft_feedback
 
-                # Save feedback to disk
-                self.context.file_manager.save_feedback(
-                    {"feedback": draft_feedback, "final_convergence": False},  # Syntax repairs don't have convergence
-                    iteration=self.context.iteration.current
-                )
+                # Record the normalized signature of the prescribed repair so
+                # later iterations can detect "same operation on the same
+                # target" deterministically (see repair_plateau_detector)
+                if current_entry:
+                    from src.utils.repair_plateau_detector import normalize_repair
+                    current_entry.repair_signature = normalize_repair(
+                        official_feedback,
+                        error_signature=current_entry.error_signature,
+                        strategy=syntax_escalation['strategy']
+                    )
+                    self.logger.log(
+                        f"[DEBUG] Repair signature: "
+                        f"{current_entry.repair_signature.get('normalized_signature')}"
+                    )
 
-                print("✓ Syntax repair instructions stored")
+                # Syntax repairs never trigger convergence
+                self._store_final_feedback(official_feedback, False, "GenerateSyntaxRepairInstruction")
+
+                self.logger.log("✓ Syntax repair instructions stored")
 
                 # Return early - skip semantic feedback flow
                 return {
@@ -949,7 +1643,13 @@ class AutoREWorkflow:
         # SEMANTIC FEEDBACK PATH - Use existing semantic feedback flow
         else:
             print("  ✅ No syntax errors - using semantic feedback path")
-            
+
+            # Deterministically extract diagnostic experiments from InterpretResults
+            # up front, so it can be spliced into the final feedback's REPAIR
+            # INSTRUCTIONS section regardless of whether GenerateSemanticFeedback or
+            # RefineFeedback happen to carry it over on their own.
+            diagnostic_text = self._extract_diagnostic_experiments(interpretation)
+
             # Retrieve pending questions from InterpretResults
             pending_questions = self.context.artifacts.get_pending_questions(
                 self.context.iteration.current
@@ -974,12 +1674,67 @@ class AutoREWorkflow:
             else:
                 print(f"  ℹ️  No pending questions from InterpretResults")
 
+            # Post-analysis chain, step 4 of 4: RepairPlateauDetector (semantic).
+            # If unsat predicates / counterexamples have persisted past the
+            # SemanticIssueTracker thresholds, force the Evaluator into
+            # requirements diagnosis instead of another round of model repair.
+            from src.utils.repair_plateau_detector import build_semantic_escalation
+            current_entry = self.context.regression_log.get_entry(self.context.iteration.current)
+            semantic_escalation = build_semantic_escalation(
+                current_iteration=self.context.iteration.current,
+                semantic_persistence=current_entry.semantic_issue_persistence if current_entry else None,
+                regression_log_entries=self.context.regression_log.entries
+            )
+            if semantic_escalation['escalation_level'] > 0:
+                self.logger.log(
+                    f"  🚨 Persistent semantic issue(s) "
+                    f"{semantic_escalation['escalated_issues']} - escalation "
+                    f"level 3 triggered (strategy decided by evidence alignment below)"
+                )
+                print(
+                    f"  🚨 Persistent issue(s) {semantic_escalation['escalated_issues']} "
+                    f"- escalated; running deterministic diagnosis + evidence alignment"
+                )
+                # Rungs 2-3 of the semantic ladder: before the Evaluator is
+                # forced into requirements diagnosis, let the Analyzer answer
+                # empirically (scope sweep + fact localization). Appends the
+                # measured evidence to the escalation directive.
+                self._run_semantic_diagnostics(
+                    semantic_escalation,
+                    current_entry.semantic_issue_persistence if current_entry else None,
+                    alloy_model,
+                )
+                # Two-key evidence gate: requirements diagnosis stays mandated
+                # only when BOTH the InterpretResults causal analysis and the
+                # deterministic diagnostics support a requirement-level cause;
+                # otherwise the directive is redirected to targeted model
+                # repair (MODEL_OVERCONSTRAINT_REPAIR). The alignment verdict
+                # is appended to the directive so GenerateSemanticFeedback
+                # sees both evidence streams and the binding conclusion.
+                from src.utils.repair_plateau_detector import apply_evidence_alignment
+                alignment = apply_evidence_alignment(semantic_escalation, interpretation)
+                if alignment.get('applied'):
+                    self.logger.log(
+                        f"[EVIDENCE_ALIGNMENT] strategy={semantic_escalation['strategy']} "
+                        f"(interpretation cause: {alignment.get('interpretation_cause')}, "
+                        f"diagnostics: {alignment.get('diagnostics_per_issue') or 'not run'}) "
+                        f"- {alignment.get('reason')}"
+                    )
+                    print(
+                        f"  ⚖️  Evidence alignment -> {semantic_escalation['strategy']}: "
+                        f"{alignment.get('reason')}"
+                    )
+            if current_entry:
+                current_entry.repair_escalation = semantic_escalation
+                self.context.regression_log._save_to_file()
+
             # Generate draft feedback
             draft_feedback = await self.generate_semantic_feedback.run(
                 interpretation=interpretation,
                 requirements_document=requirements,
                 alloy_model=alloy_model,
-                relevant_qa=relevant_qa_str
+                relevant_qa=relevant_qa_str,
+                persistence_status=semantic_escalation['directive']
             )
 
             print("✓ Draft feedback generated")
@@ -992,6 +1747,26 @@ class AutoREWorkflow:
             )
 
             new_questions = parse_user_questions(draft_feedback, section_name="UPDATED USER QUESTIONS")
+
+            # Store questions from GenerateSemanticFeedback as pending questions
+            if new_questions:
+                # Merge with any existing pending questions from InterpretResults
+                existing_pending = self.context.artifacts.get_pending_questions(
+                    self.context.iteration.current
+                ) or []
+                all_questions = existing_pending + new_questions
+                # Remove duplicates while preserving order
+                seen = set()
+                unique_questions = []
+                for q in all_questions:
+                    if q not in seen:
+                        seen.add(q)
+                        unique_questions.append(q)
+                self.context.artifacts.store_pending_questions(
+                    self.context.iteration.current,
+                    unique_questions
+                )
+                print(f"  📋 {len(new_questions)} question(s) from semantic feedback added to pending")
 
             # Parse and apply Q&A status updates
             qa_updates = parse_qa_updates(draft_feedback)
@@ -1014,6 +1789,23 @@ class AutoREWorkflow:
                 print(f"\n... ({len(draft_feedback) - 1000} more characters)")
             print("-" * 80 + "\n")
 
+            # Rung 5 decision gate: escalated semantic issues whose feedback
+            # proposes requirement updates need an explicit user decision.
+            # The existing review interaction doubles as the gate.
+            gate_active = False
+            proposed_updates = None
+            if semantic_escalation['escalation_level'] > 0:
+                proposed_updates = self._extract_requirement_updates(draft_feedback)
+                if proposed_updates:
+                    gate_active = True
+                    print("🚧 REQUIREMENT-CHANGE DECISION GATE (persistent issue escalation)")
+                    print("The Evaluator proposes these requirement update(s):\n")
+                    print(proposed_updates.strip())
+                    print(
+                        "\nYour review doubles as the decision: type 'accept' or 'reject', "
+                        "provide corrected wording, or press Enter to accept provisionally."
+                    )
+
             # Get user review
             print("Review the feedback above. Provide comments or press Enter to continue:")
             user_review = self.cli.request_input(
@@ -1021,8 +1813,29 @@ class AutoREWorkflow:
                 multiline=True
             )
 
+            gate_decision = None
+            if gate_active:
+                from src.utils.repair_plateau_detector import classify_gate_decision
+                gate_decision = classify_gate_decision(user_review)
+                self.logger.log(
+                    f"[REQUIREMENT_GATE] iter={self.context.iteration.current} "
+                    f"decision={gate_decision}"
+                )
+                print(f"  🚧 Requirement-change decision: {gate_decision}")
+                if gate_decision in ('accepted', 'rejected'):
+                    # A bare keyword is a gate decision, not review content
+                    # for RefineFeedback.
+                    user_review = ""
+
             # Check if user provided meaningful feedback
             if user_review and user_review.strip():
+                # Log user review
+                self.logger.log("\n" + "=" * 80)
+                self.logger.log("USER INPUT - Step 5-6 Feedback Review")
+                self.logger.log("=" * 80)
+                self.logger.log(user_review)
+                self.logger.log("=" * 80 + "\n")
+
                 # Refine feedback based on user review
                 print("  Refining feedback based on your input...")
                 final_feedback = await self.refine_feedback.run(
@@ -1030,25 +1843,28 @@ class AutoREWorkflow:
                     user_review=user_review
                 )
 
-                # Parse final convergence from refined feedback
-                convergence_match = re.search(
-                    r'===\s*CONVERGENCE_RECOMMENDATION\s*===.*?Status:\s*(TRUE|FALSE)',
-                    final_feedback,
-                    re.IGNORECASE | re.DOTALL
-                )
-                final_convergence = convergence_match.group(1).upper() == "TRUE" if convergence_match else False
+                # Safety net: RefineFeedback only guarantees preserving the
+                # CONVERGENCE_RECOMMENDATION section, so re-inject diagnostic
+                # experiments here in case its rewrite dropped them.
+                final_feedback = self._inject_diagnostic_experiments(final_feedback, diagnostic_text)
 
-                # Update artifacts
-                self.context.artifacts.store_feedback(
-                    self.context.iteration.current,
-                    final_feedback
+                # Rung 5: enforce the user's requirement-change decision
+                final_feedback = self._apply_requirement_gate(
+                    final_feedback, gate_decision, proposed_updates,
+                    semantic_escalation, current_entry,
+                    qa_index=len(new_questions or []) + 1,
                 )
 
-                # Save feedback to disk
-                self.context.file_manager.save_feedback(
-                    {"feedback": final_feedback, "final_convergence": final_convergence},
-                    iteration=self.context.iteration.current
-                )
+                # Parse final convergence from refined feedback and persist it
+                final_convergence = self._parse_convergence(final_feedback)
+                if current_entry:
+                    from src.utils.repair_plateau_detector import normalize_repair
+                    current_entry.repair_signature = normalize_repair(
+                        final_feedback,
+                        error_signature=current_entry.error_signature,
+                        strategy=semantic_escalation['strategy']
+                    )
+                self._store_final_feedback(final_feedback, final_convergence, "GenerateSemanticFeedback")
 
                 # Record user preference
                 self.context.user_preferences.add_preference(
@@ -1059,21 +1875,27 @@ class AutoREWorkflow:
 
                 # Create Q&A records if user answered questions
                 if new_questions:
-                    from src.utils.qa_parser import extract_question_context
+                    from src.utils.qa_parser import extract_question_context, parse_user_feedback_for_answers
                     from src.utils.qa_database import QARecord, create_qa_id
 
                     print(f"  💾 Storing {len(new_questions)} Q&A record(s)...")
 
+                    # Parse user feedback to extract individual answers for each question
+                    answer_map = parse_user_feedback_for_answers(user_review, new_questions)
+
                     for idx, question in enumerate(new_questions, start=1):
                         context = extract_question_context(question)
                         qa_id = create_qa_id(self.context.iteration.current, idx)
+
+                        # Extract individual answer for this question (0-indexed)
+                        individual_answer = answer_map.get(idx - 1, user_review)
 
                         # User answered - mark as confirmed
                         record = QARecord(
                             id=qa_id,
                             iteration=self.context.iteration.current,
                             question=question,
-                            answer=user_review,  # Full user feedback
+                            answer=individual_answer,  # Individual answer for this question
                             source="user",
                             context=context,
                             status="confirmed"
@@ -1091,29 +1913,39 @@ class AutoREWorkflow:
             else:
                 # No user feedback - skip RefineFeedback, use preliminary recommendation from draft
                 if user_review is None:
+                    self.logger.log("✓ No user feedback provided (timeout) - using draft feedback (Step 5-6)")
                     print("✓ No user feedback provided (timeout) - using draft feedback")
                 else:
+                    self.logger.log("✓ No user feedback provided - using draft feedback (Step 5-6)")
                     print("✓ No user feedback provided - using draft feedback")
 
                 # Parse preliminary convergence from draft feedback
-                convergence_match = re.search(
-                    r'===\s*CONVERGENCE_RECOMMENDATION\s*===.*?Status:\s*(TRUE|FALSE)',
-                    draft_feedback,
-                    re.IGNORECASE | re.DOTALL
-                )
-                preliminary_convergence = convergence_match.group(1).upper() == "TRUE" if convergence_match else False
+                preliminary_convergence = self._parse_convergence(draft_feedback)
 
-                # Store draft as final feedback
-                self.context.artifacts.store_feedback(
-                    self.context.iteration.current,
-                    draft_feedback
+                # Store draft as official final feedback (no user refinement)
+                official_feedback = draft_feedback
+
+                # Safety net: ensure diagnostic experiments from InterpretResults
+                # reached REPAIR INSTRUCTIONS even if GenerateSemanticFeedback dropped them.
+                official_feedback = self._inject_diagnostic_experiments(official_feedback, diagnostic_text)
+
+                # Rung 5: no user response -> proceed under a provisional
+                # assumption (recorded in the Q&A database) or, on a bare
+                # 'reject', strip the proposed updates deterministically.
+                official_feedback = self._apply_requirement_gate(
+                    official_feedback, gate_decision, proposed_updates,
+                    semantic_escalation, current_entry,
+                    qa_index=len(new_questions or []) + 1,
                 )
 
-                # Save feedback to disk
-                self.context.file_manager.save_feedback(
-                    {"feedback": draft_feedback, "final_convergence": preliminary_convergence},
-                    iteration=self.context.iteration.current
-                )
+                if current_entry:
+                    from src.utils.repair_plateau_detector import normalize_repair
+                    current_entry.repair_signature = normalize_repair(
+                        official_feedback,
+                        error_signature=current_entry.error_signature,
+                        strategy=semantic_escalation['strategy']
+                    )
+                self._store_final_feedback(official_feedback, preliminary_convergence, "GenerateSemanticFeedback")
 
                 # If Evaluator asked questions but user didn't answer, check for agent assumptions
                 # IMPORTANT: Only capture assumptions made in response to unanswered user questions,
@@ -1171,6 +2003,140 @@ class AutoREWorkflow:
                     "final_convergence": preliminary_convergence
                 }
 
+    def _parse_convergence(self, feedback: str) -> bool:
+        """Parse the CONVERGENCE_RECOMMENDATION Status (TRUE/FALSE) from feedback text."""
+        import re
+        match = re.search(
+            r'===\s*CONVERGENCE_RECOMMENDATION\s*===.*?Status:\s*(TRUE|FALSE)',
+            feedback,
+            re.IGNORECASE | re.DOTALL
+        )
+        return match.group(1).upper() == "TRUE" if match else False
+
+    def _store_final_feedback(self, feedback: str, final_convergence: bool, action_type: str) -> None:
+        """Persist official feedback to artifacts, disk, and the regression log."""
+        self.context.artifacts.store_feedback(
+            self.context.iteration.current,
+            feedback,
+            action_type=action_type
+        )
+        self.context.file_manager.save_feedback(
+            {"feedback": feedback, "final_convergence": final_convergence},
+            iteration=self.context.iteration.current
+        )
+        entry = self.context.regression_log.get_entry(self.context.iteration.current)
+        if entry:
+            entry.evaluator_feedback = feedback
+            self.context.regression_log._save_to_file()
+
+    def _store_confirmed_lessons(self, probation_items) -> None:
+        """Store lessons whose probation completed (target issue stayed resolved)."""
+        for item in probation_items:
+            pending = item['pending']
+            for lesson_content in pending['lessons']:
+                self.context.memory.store(
+                    content=lesson_content,
+                    item_type='lesson',
+                    agent=pending['agent_name'],
+                    action=pending['action_name'],
+                    iteration=pending['source_iteration']
+                )
+            self.logger.log(
+                f"✅ Lesson from {pending['agent_name']}/{pending['action_name']} "
+                f"(iteration {pending['source_iteration']}) confirmed and recorded"
+            )
+
+    def _extract_section(
+        self,
+        text: str,
+        section_keywords: str,
+        filter_placeholders: bool = True,
+    ) -> Optional[str]:
+        """
+        Extract a named "=== SECTION ===" (or ##/**/numeric variant) block's content
+        from LLM-generated text. Supports multiple header formats: ===, ##, **, and
+        numeric (N.).
+
+        Args:
+            text: Full text containing one or more section blocks
+            section_keywords: Regex fragment identifying the section name, e.g.
+                r'REQUIREMENT[S]?\s+UPDATE[S]?' or r'Diagnostic\s+experiments\s+recommended'
+            filter_placeholders: if True, reject placeholder-only content ("None - ...",
+                "N/A", "Not applicable", "No ... needed/required") and require a positive
+                content indicator (bullets, numbers, or action verbs + multiple lines)
+
+        Returns:
+            The section content, or None if empty/not found/placeholder-only
+        """
+        import re
+
+        # Pattern to detect the section header in various formats:
+        # - === SECTION NAME ===
+        # - ## 4. SECTION NAME
+        # - **SECTION NAME**
+        # - 4. SECTION NAME
+        header_pattern = rf'^(?:===|##|\*\*|\d+\.)\s*.*?{section_keywords}.*?(?:===|\*\*)?$'
+
+        lines = text.split('\n')
+        header_index = None
+
+        # Find the header line
+        for i, line in enumerate(lines):
+            if re.match(header_pattern, line.strip(), re.IGNORECASE):
+                header_index = i
+                break
+
+        if header_index is None:
+            return None
+
+        # Extract content from header+1 until next section header
+        content_lines = []
+        for i in range(header_index + 1, len(lines)):
+            line = lines[i]
+
+            # Stop at next section header (starts with ===, ##, **, or "--- ")
+            if re.match(r'^(===|##|\*\*|---)\s', line):
+                break
+
+            content_lines.append(line)
+
+        content = '\n'.join(content_lines).strip()
+
+        if not content:
+            return None
+
+        if not filter_placeholders:
+            return content
+
+        # Filter known placeholders using regex patterns
+        placeholder_patterns = [
+            r'^none\s*[-:–]',           # "None - requirements are clear"
+            r'^no\s+.*?\b(needed|required|necessary|applicable|updates?|experiments?|changes?)\b',  # "No requirement updates needed", "No diagnostic experiments necessary"
+            r'^n/?a\s*[-:–]',          # "N/A - ..." or "N/A: ..."
+            r'^not\s+applicable',       # "Not applicable"
+        ]
+
+        content_lower = content.lower()
+        for pattern in placeholder_patterns:
+            if re.match(pattern, content_lower):
+                return None
+
+        # Check for positive indicators of real content
+        has_bullets = bool(re.search(r'^\s*[-•*]\s', content, re.MULTILINE))
+        has_numbers = bool(re.search(r'^\s*\d+\.', content, re.MULTILINE))
+        has_action_verbs = bool(re.search(
+            r'\b(Clarify|Add|Update|Remove|Specify|Modify|Define|Include|Test|Relax|Increase|Separate|Simplify)\b',
+            content, re.IGNORECASE
+        ))
+        has_multiple_lines = len([l for l in content.split('\n') if l.strip()]) > 2
+
+        # Return if it has strong indicators of real content
+        if has_bullets or has_numbers or (has_action_verbs and has_multiple_lines):
+            return content
+
+        # If unsure, return None (conservative - won't create spurious content)
+        return None
+
     def _extract_requirement_updates(self, feedback: str) -> Optional[str]:
         """
         Extract only the REQUIREMENT_UPDATES section from feedback.
@@ -1181,20 +2147,74 @@ class AutoREWorkflow:
         Returns:
             Only the REQUIREMENT_UPDATES section content, or None if empty/not found
         """
+        return self._extract_section(feedback, r'REQUIREMENT[S]?\s+UPDATE[S]?')
+
+    def _extract_diagnostic_experiments(self, interpretation: str) -> Optional[str]:
+        """
+        Extract only the "Diagnostic experiments recommended" section from an
+        InterpretResults interpretation.
+
+        Args:
+            interpretation: Full InterpretResults output
+
+        Returns:
+            Only the diagnostic experiments content, or None if empty/not found
+            (the common case on iterations with no UNSAT predicates to analyze)
+        """
+        return self._extract_section(interpretation, r'Diagnostic\s+experiments\s+recommended')
+
+    def _inject_diagnostic_experiments(self, feedback: str, diagnostic_text: Optional[str]) -> str:
+        """
+        Deterministically splice diagnostic experiments text (extracted from
+        InterpretResults) into the REPAIR INSTRUCTIONS section of feedback, as a
+        safety net for cases where GenerateSemanticFeedback/RefineFeedback fail to
+        carry it over on their own.
+
+        Args:
+            feedback: Full feedback text about to be sent to RE
+            diagnostic_text: Diagnostic experiments content extracted from
+                InterpretResults, or None/empty if there's nothing to inject
+
+        Returns:
+            feedback with diagnostic_text appended into REPAIR INSTRUCTIONS (or as a
+            trailing section if REPAIR INSTRUCTIONS isn't found), or feedback
+            unchanged if diagnostic_text is falsy
+        """
         import re
 
-        # Pattern to extract REQUIREMENT_UPDATES section
-        # Match from === REQUIREMENT_UPDATES === to the next === at start of line or end of string
-        pattern = r'===\s*REQUIREMENT_UPDATES\s*===\s*\n(.*?)(?=^===|\Z)'
-        match = re.search(pattern, feedback, re.DOTALL | re.MULTILINE)
+        if not diagnostic_text:
+            return feedback
 
-        if match:
-            content = match.group(1).strip()
-            # Check if content is meaningful (not just empty, placeholder, or "None")
-            if content and content.lower() not in ['none', 'n/a', 'not applicable', '[ambiguities/inconsistencies/missing items]']:
-                return content
+        block = (
+            "\n\n--- Diagnostic Experiments (verbatim from InterpretResults, auto-included) ---\n"
+            f"{diagnostic_text}"
+        )
 
-        return None
+        lines = feedback.split('\n')
+        header_pattern = r'^===\s*REPAIR\s+INSTRUCTIONS\s*==='
+        header_index = None
+        for i, line in enumerate(lines):
+            if re.match(header_pattern, line.strip(), re.IGNORECASE):
+                header_index = i
+                break
+
+        if header_index is None:
+            # Format drift edge case - append as a new trailing section rather than
+            # silently dropping the diagnostic experiments.
+            self.logger.log("[DEBUG] REPAIR INSTRUCTIONS section not found - appending diagnostic experiments as trailing section")
+            return feedback.rstrip() + "\n\n=== DIAGNOSTIC EXPERIMENTS (AUTO-INCLUDED) ===" + block
+
+        # Find the end of the REPAIR INSTRUCTIONS section (next section header, or EOF)
+        next_header_index = len(lines)
+        for i in range(header_index + 1, len(lines)):
+            if re.match(r'^(===|##|\*\*|---)\s', lines[i]):
+                next_header_index = i
+                break
+
+        new_lines = lines[:next_header_index] + block.split('\n') + lines[next_header_index:]
+
+        print("  ✓ Diagnostic experiments from InterpretResults appended to REPAIR INSTRUCTIONS")
+        return '\n'.join(new_lines)
 
     async def _step7_update_requirements(self):
         """Step 7: Update requirements based on feedback."""
@@ -1233,7 +2253,7 @@ class AutoREWorkflow:
 
     async def _step8_update_model(self):
         """Step 8: Update Alloy model based on feedback."""
-        print("\n🔨 Step 8: Updating Alloy model...")
+        self.logger.log("\n🔨 Step 8: Updating Alloy model...")
 
         current_model = self.context.artifacts.get_latest_alloy_model()
         feedback = self.context.artifacts.get_latest_feedback()
@@ -1245,35 +2265,70 @@ class AutoREWorkflow:
         if previous_iteration > 0:
             previous_model = self.context.artifacts.alloy_models.get(previous_iteration, "")
 
-        # Check if this is a syntax repair - if so, add delay for user review
+        # Determine mode based on which action generated the feedback
+        # Syntax mode: feedback from GenerateSyntaxRepairInstruction
+        # Semantic mode: feedback from GenerateSemanticFeedback
+        # NOTE: Feedback was stored in the previous iteration (before next_iteration() was called)
+        feedback_action = self.context.artifacts.get_feedback_action_type(previous_iteration)
+
         import time
-        if feedback and "REPAIR INSTRUCTIONS" in feedback:
-            print("  ⏱️  Waiting 30 seconds for feedback review...")
+        if feedback_action == "GenerateSyntaxRepairInstruction":
+            mode = "syntax"
+            self.logger.log("  🔧 Mode: Syntax repair (minimal changes)")
+            self.logger.log(f"  📝 Feedback source: {feedback_action}")
+            self.logger.log("  ⏱️  Waiting 30 seconds for feedback review...")
             time.sleep(30)
-            print("  ✓ Proceeding with model update")
+            self.logger.log("  ✓ Proceeding with model update")
+        else:
+            mode = "semantic"
+            self.logger.log("  🔧 Mode: Semantic repair (behavior improvements)")
+            self.logger.log(f"  📝 Feedback source: {feedback_action or 'GenerateSemanticFeedback (default)'}")
+
+        # Carry the previous iteration's escalation decision (if any) into the
+        # RE agent's prompt so it knows which fixes are forbidden / whether the
+        # enclosing block must be rewritten instead of minimally patched.
+        escalation_directive = ""
+        escalation_entry = self.context.regression_log.get_entry(previous_iteration)
+        if escalation_entry and escalation_entry.repair_escalation:
+            escalation = escalation_entry.repair_escalation
+            if escalation.get('escalation_level', 0) > 0:
+                escalation_directive = escalation.get('directive', '')
+                self.logger.log(
+                    f"  🚨 Escalation active for this update: "
+                    f"{escalation.get('strategy')} (level {escalation.get('escalation_level')})"
+                )
+                # A regenerated block must be rebuilt from the REQUIREMENTS,
+                # not from the broken model text - syntax mode normally omits
+                # the requirements document, so attach it to the directive
+                if (escalation.get('strategy') in ('REGENERATE_BLOCK', 'REQUIREMENTS_DIAGNOSIS',
+                                                   'REGENERATE_PREDICATES')
+                        and escalation_directive):
+                    escalation_directive += (
+                        "\n\nLATEST REQUIREMENTS (source of truth for the regenerated block):\n"
+                        + (requirements or "")
+                    )
 
         updated_model_response = await self.update_model.run(
             current_model=current_model,
             evaluation_feedback=feedback,
-            requirements_document=requirements
+            requirements_document=requirements,
+            mode=mode,
+            escalation_directive=escalation_directive
         )
 
-        print("✓ Alloy model updated")
+        self.logger.log("✓ Alloy model updated")
 
         # Parse regression tracking fields from RE response
         from .utils.regression_log import parse_re_response_for_regression, RegressionLogEntry, VerificationResult
 
         regression_fields = parse_re_response_for_regression(updated_model_response)
 
-        # Extract the actual model code (after the regression fields)
-        # The model code is in the ```alloy code block
-        import re
-        model_match = re.search(r'```alloy\s*\n(.*?)\n```', updated_model_response, re.DOTALL)
-        if model_match:
-            updated_model = model_match.group(1)
-        else:
-            # Fallback: use the whole response if no code block found
-            updated_model = updated_model_response
+        # Extract the actual model code (after the regression fields) from the
+        # ```alloy code block; falls back to the whole response. The shared
+        # extractor also fixes the old local regex's edge case that required a
+        # newline before the closing fence.
+        from src.utils.alloy_model_validator import extract_alloy_code
+        updated_model = extract_alloy_code(updated_model_response)
 
         # Save to file
         model_file = self.context.file_manager.save_alloy_model(
@@ -1284,7 +2339,7 @@ class AutoREWorkflow:
 
         # Compute diff using Linux diff command on actual files
         updated_lines = ""
-        if previous_iteration > 0:
+        if previous_iteration >= 0:
             previous_model_file = self.context.file_manager.models_dir / f"AlloyModel__{previous_iteration}.als"
             if previous_model_file.exists():
                 import subprocess
@@ -1315,8 +2370,11 @@ class AutoREWorkflow:
                 except Exception as e:
                     print(f"Warning: Failed to compute diff: {e}")
                     updated_lines = "Error computing diff"
+            else:
+                # Previous model file not found
+                updated_lines = "Initial model (no previous version to compare)"
         else:
-            # First iteration - no previous model to compare
+            # This shouldn't happen (previous_iteration would be -1)
             updated_lines = "Initial model (no previous version to compare)"
 
         # Get previous verification result if available
@@ -1346,8 +2404,8 @@ class AutoREWorkflow:
 
         self.context.regression_log.add_entry(entry)
         print(f"  Regression log entry created for iteration {self.context.iteration.current}")
-        self._debug(f"[DEBUG] Step 8 - Created entry for iteration {self.context.iteration.current}")
-        self._debug(f"[DEBUG] Total entries in log: {len(self.context.regression_log.entries)}")
+        self.logger.log(f"[DEBUG] Step 8 - Created entry for iteration {self.context.iteration.current}")
+        self.logger.log(f"[DEBUG] Total entries in log: {len(self.context.regression_log.entries)}")
 
     def _print_summary(self):
         """Print workflow summary to console and log file."""

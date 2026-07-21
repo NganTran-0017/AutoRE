@@ -1,0 +1,154 @@
+=== FEEDBACK ===
+## 1. Next Action Decision
+
+**Primary next action:**  
+refine/narrow fix
+
+**Rationale:**  
+The syntax repair was successful and caused no regressions, but persistent semantic failures remain (unsatisfiable EmergencyBypassFIFOScenario; counterexamples for several key assertions). No new regressions were introduced, but the current changes are not sufficient for convergence. The required fixes are more targeted semantic/model improvements, not a full revert nor a scope adjustment.
+
+---
+
+## 2. Concrete Model-Improvement Guidance
+
+**A. EmergencyBypassFIFOScenario Unsatisfiable (likely overconstraint/conflict):**
+- **Refactor Emergency request processing logic:**  
+  The current EmergencyProcessingPriority fact may be too restrictive, preventing any instance where a high-classification request can be processed ahead of a lower-classification one (i.e., bypassing FIFO). Specifically, the constraint:
+  ```all r: Request | (s.reqStatus[r] = Pending and s2.reqStatus[r] = Processed) => r in high```
+  may block all lower-classification requests from ever being processed if any high are present, and may not allow a "bypass" (processing high before FIFO low/med).
+- **Action:**  
+  - Replace the strict "all" condition with an "exists" or "allows" form, so that in Emergency, it is possible (but not required) to process a high-classification request ahead of a pending lower-classification request, even if the lower-classification one is earlier in FIFO order.
+  - Concretely, update the EmergencyProcessingPriority fact to allow for concurrent or prioritized processing of high-classification requests, without blocking eventual processing of others.
+- **Example code guidance:**
+  ```all s, s2: State |
+      s.mode = Emergency and s2.mode = Emergency and Next[s, s2] =>
+          let pending = {r: Request | s.reqStatus[r] = Pending} |
+          let high = {r: Request | r in pending and requestClassification[r] = High} |
+          some r: high | s2.reqStatus[r] = Processed
+  ```
+  - Ensure that this does not overconstrain processing of medium/low requests once no high remain.
+
+---
+
+**B. assertRequestProcessorClearance (counterexample):**
+- **Likely cause:**  
+  The assertion attempts to model that the request processor's clearance meets or exceeds the request's classification, but the logic is convoluted and may not match intended clearance policy.
+- **Action:**  
+  - Replace the multi-case clearance check with a direct, total ordering comparison. Use the leqClearance function:
+  - For each processed request, require:  
+    `leqClearance[requestClassification[r], proc.clearance]`
+- **Example code guidance:**
+  ```all s: State, r: Request |
+      s.reqStatus[r] = Processed and some s.reqProcessor[r] =>
+          leqClearance[requestClassification[r], s.reqProcessor[r].clearance]
+  ```
+
+---
+
+**C. assertMutexAllowedDuringEmergency (counterexample):**
+- **Likely cause:**  
+  The model may not always allow users to hold mutex roles during Emergency, possibly because role assignments are still constrained by mutex facts in Emergency.
+- **Action:**  
+  - Relax mutual exclusion constraints during Emergency mode. Ensure that the DelegationMutex fact only applies in Normal mode, and explicitly allow mutex roles in Emergency.  
+  - Review any facts or constraints that might globally prevent mutex role assignment.
+
+---
+
+**D. assertAdminsMustUpdateCredentialsOnce (counterexample):**
+- **Problem:**  
+  This assertion expects that after Emergency mode ends, all admins update credentials exactly once. The model's adminCredUpdated tracking and transition logic may not enforce this as a liveness property.
+- **Action:**  
+  - Add or refine a fact/predicate to require that after Emergency exit (in the first Normal state after Emergency), all admins must have adminCredUpdated[a]=True, and that this cannot occur in any other state.
+  - Ensure no transitions allow adminCredUpdated[a]=True except immediately after Emergency exit.
+
+---
+
+**E. assertRoleAssignmentClearance & assertDelegationClearance (counterexamples):**
+- **Likely cause:**  
+  Role assignment/delegation clearance is only asserted, not enforced by facts, so model instances may arise where assignment/delegation exceeds clearance.
+- **Action:**  
+  - Add facts enforcing these constraints:
+    - For all s: State, u: User, r: Role:  
+      `r in s.userRoles[u] => leqClearance[r.minClearance, u.clearance]`
+    - For all d: Delegation:  
+      `leqClearance[d.role.minClearance, d.to.clearance]`
+  - Remove these as "pure" assertions if you expect no exception; otherwise, document requirement for valid exceptions.
+
+---
+
+**F. assertAllRequestsEventuallyProcessed (counterexample):**
+- **Likely cause:**  
+  The model does not guarantee liveness: that after Emergency, all requests are eventually processed.
+- **Action:**  
+  - Enforce, via a liveness fact or stronger assertion, that each pending request must transition to Processed in some future Normal state.
+  - If model structure prevents liveness (e.g., no guarantee of transitions that process all requests), consider adding a progress fact:
+    ```all r: Request |
+        some s: State | s.mode = Normal and s.reqStatus[r] = Processed
+    ```
+    and ensure no facts prevent request processing transitions.
+
+---
+
+## 3. Assumptions to Review
+
+No new flagged assumptions at this time. If model changes introduce new constraints or relaxations, flag those assumptions as `confirm` in the next round.
+
+---
+
+## 4. Requirement Update Recommendations
+
+No requirements need update at this stage. All ambiguity and missing exceptions relate to modeling choices, not requirements text.
+
+---
+
+## 5. Q&A Reuse and Update
+
+No Q&A reuse or new Q&A required at this stage.
+
+---
+
+## 6. Stronger Verification Checks (when hard metrics pass)
+
+Once all counterexamples are resolved:
+- Add vacuity checks on Emergency privilege revocation.
+- Check negative cases (e.g., role mutex in Normal never violated).
+- Add edge-case scenarios for concurrent high-classification requests in Emergency.
+
+---
+
+## 7. Prioritized Handoff Items
+
+**Critical blockers to fix now:**
+1. Refine EmergencyProcessingPriority to allow EmergencyBypassFIFOScenario (A)
+2. Correct assertRequestProcessorClearance logic and enforce via fact (B)
+3. Relax mutex constraints in Emergency mode (C)
+4. Enforce admin credential update exactly once after Emergency (D)
+5. Enforce role assignment and delegation clearance in facts (E)
+6. Add/request liveness progress for all requests (F)
+
+**Important follow-up improvements:**
+- After semantic issues are addressed, expand property checks for vacuity and negative cases.
+- Review assumptions if new constraints are introduced.
+
+**Optional/future enhancements:**
+- Enhance Emergency scenario coverage (e.g., concurrent processing, edge cases).
+- Modularize processing logic for maintainability.
+
+---
+
+**Summary Table:**
+
+| Issue/Scenario                              | Action                                                                 | Priority     |
+|---------------------------------------------|------------------------------------------------------------------------|--------------|
+| EmergencyBypassFIFOScenario unsat           | Refine EmergencyProcessingPriority to enable high-priority bypass       | Critical     |
+| assertRequestProcessorClearance fails       | Rewrite constraint using leqClearance; enforce as fact                 | Critical     |
+| assertMutexAllowedDuringEmergency fails     | Relax mutex constraints during Emergency                               | Critical     |
+| assertAdminsMustUpdateCredentialsOnce fails | Enforce credential update timing; refine adminCredUpdated logic         | Critical     |
+| assertRoleAssignment/DelegationClearance    | Enforce clearance in facts, not just assertions                        | Critical     |
+| assertAllRequestsEventuallyProcessed fails  | Add strong liveness/progress fact for request processing               | Critical     |
+
+Please address these critical model corrections before proceeding to further verification or requirements review.
+
+=== FINAL CONVERGENCE ===
+False
+

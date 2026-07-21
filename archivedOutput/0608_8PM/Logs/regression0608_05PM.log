@@ -1,0 +1,699 @@
+[
+  {
+    "iteration_id": 0,
+    "model_file_location": "Output/AlloyModels/AlloyModel__0.als",
+    "fix_intent": "Initial model creation",
+    "source_ref": "Initial build",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "There are 1 possible tokens that can appear here:\n}\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__0.als at line 113 column 83:",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": null,
+    "updated_lines": "",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": null,
+    "outcome_classification": "pending",
+    "issue": "syntax error in fun requestClassification",
+    "syntax_error_context": "There are 1 possible tokens that can appear here:\n}\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__0.als at line 113 column 83:",
+    "resolved_target_issue": null,
+    "fix_pattern_detected": null,
+    "is_reverted": false,
+    "timestamp": "2026-06-08T13:59:36.006712"
+  },
+  {
+    "iteration_id": 1,
+    "model_file_location": "Output/AlloyModels/AlloyModel__1.als",
+    "fix_intent": "Correct the quantifier domain in the requestClassification function by parenthesizing the set subtraction, to resolve a syntax error and ensure Alloy 6 parser acceptance.",
+    "source_ref": "Evaluator feedback: syntax error at line 113 due to missing parentheses in \"no c2: Classification - c\".",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "There are 1 possible tokens that can appear here:\n}\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__1.als at line 113 column 85:",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "There are 1 possible tokens that can appear here:\n}\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__0.als at line 113 column 83:",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "Initial model (no previous version to compare)",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error in fun requestClassification",
+    "syntax_error_context": "There are 1 possible tokens that can appear here:\n}\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__1.als at line 113 column 85:",
+    "resolved_target_issue": false,
+    "fix_pattern_detected": "1 previous fix attempt for this issue has failed",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T14:01:25.486545"
+  },
+  {
+    "iteration_id": 2,
+    "model_file_location": "Output/AlloyModels/AlloyModel__2.als",
+    "fix_intent": "Rewrite the requestClassification function to avoid set subtraction in the quantifier domain, using explicit inequality to ensure Alloy 6 type correctness and resolve the parsing/type error.",
+    "source_ref": "Evaluator feedback: syntax error at line 113 due to set subtraction \"no c2: Classification - c\" in the quantifier domain; repair instructions specify to use \"c2 != c\" instead.",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "There are 1 possible tokens that can appear here:\n}\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__2.als at line 113 column 91:",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "There are 1 possible tokens that can appear here:\n}\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__1.als at line 113 column 85:",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__1.als\t2026-06-08 14:01:25.485643298 -0500\n+++ Output/AlloyModels/AlloyModel__2.als\t2026-06-08 14:02:42.502114351 -0500\n@@ -110,7 +110,7 @@\n fun requestClassification(r: Request): one Classification {\n     {c: Classification | \n         c in r.affects.classification and\n-        no c2: (Classification - c) | c2 in r.affects.classification and higherClass(c2, c)\n+        no c2: Classification | c2 != c and c2 in r.affects.classification and higherClass(c2, c)\n     }\n }\n \n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error in fun requestClassification",
+    "syntax_error_context": "There are 1 possible tokens that can appear here:\n}\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__2.als at line 113 column 91:",
+    "resolved_target_issue": false,
+    "fix_pattern_detected": "2 total fix attempts for this issue. Similar approach used 2 times: \"Correct the quantifier domain in the requestClassification function by parenthesizing the set subtraction, to resolve a syntax error and ensure Alloy 6 parser acceptance.\"",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T14:02:42.503179"
+  },
+  {
+    "iteration_id": 3,
+    "model_file_location": "Output/AlloyModels/AlloyModel__3.als",
+    "fix_intent": "Add the missing closing parenthesis in the \"no c2: Classification | ...\" quantifier in the requestClassification function to resolve the Alloy 6 syntax error.",
+    "source_ref": "Evaluator feedback: syntax error in requestClassification due to unmatched parenthesis (missing closing parenthesis for \"no c2: Classification | ...\").",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "There are 1 possible tokens that can appear here:\n)\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__3.als at line 113 column 92:",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "There are 1 possible tokens that can appear here:\n}\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__2.als at line 113 column 91:",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__2.als\t2026-06-08 14:02:42.502114351 -0500\n+++ Output/AlloyModels/AlloyModel__3.als\t2026-06-08 14:04:00.694642214 -0500\n@@ -110,7 +110,7 @@\n fun requestClassification(r: Request): one Classification {\n     {c: Classification | \n         c in r.affects.classification and\n-        no c2: Classification | c2 != c and c2 in r.affects.classification and higherClass(c2, c)\n+        no c2: Classification | (c2 != c and c2 in r.affects.classification and higherClass(c2, c))\n     }\n }\n \n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error in fun requestClassification",
+    "syntax_error_context": "There are 1 possible tokens that can appear here:\n)\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__3.als at line 113 column 92:",
+    "resolved_target_issue": false,
+    "fix_pattern_detected": "3 total fix attempts for this issue. Similar approach used 3 times: \"Correct the quantifier domain in the requestClassification function by parenthesizing the set subtraction, to resolve a syntax error and ensure Alloy 6 parser acceptance.\"",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T14:04:00.695902"
+  },
+  {
+    "iteration_id": 4,
+    "model_file_location": "Output/AlloyModels/AlloyModel__4.als",
+    "fix_intent": "Refactor the body of the requestClassification function to use a quantifier expression returning exactly one Classification, replacing the invalid set comprehension and resolving the Alloy 6 syntax error.",
+    "source_ref": "Evaluator feedback: Alloy 6 syntax error in requestClassification due to incorrect curly-brace set comprehension as function body; must use a quantifier expression for a function returning one Classification.",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "There are 1 possible tokens that can appear here:\n)\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__4.als at line 112 column 69:",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "There are 1 possible tokens that can appear here:\n)\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__3.als at line 113 column 92:",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__3.als\t2026-06-08 14:04:00.694642214 -0500\n+++ Output/AlloyModels/AlloyModel__4.als\t2026-06-08 14:05:23.696557947 -0500\n@@ -108,10 +108,8 @@\n \n fun requestClassification(r: Request): one Classification {\n-    {c: Classification | \n-        c in r.affects.classification and\n-        no c2: Classification | (c2 != c and c2 in r.affects.classification and higherClass(c2, c))\n-    }\n+    one c: r.affects.classification |\n+        no c2: r.affects.classification | c2 != c and higherClass(c2, c)\n }\n \n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error in fun requestClassification",
+    "syntax_error_context": "There are 1 possible tokens that can appear here:\n)\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__4.als at line 112 column 69:",
+    "resolved_target_issue": false,
+    "fix_pattern_detected": "4 total fix attempts for this issue. Similar approach used 4 times: \"Correct the quantifier domain in the requestClassification function by parenthesizing the set subtraction, to resolve a syntax error and ensure Alloy 6 parser acceptance.\"",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T14:05:23.697685"
+  },
+  {
+    "iteration_id": 5,
+    "model_file_location": "Output/AlloyModels/AlloyModel__5.als",
+    "fix_intent": "Fix Alloy 6 syntax error in the requestClassification function by replacing the invalid function call parentheses with square brackets for higherClass, ensuring Alloy 6 compliance.",
+    "source_ref": "Evaluator feedback: Alloy 6 syntax error in requestClassification due to incorrect use of parentheses () in higherClass function call; Alloy 6 requires parameter lists in square brackets [].",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "There are 1 possible tokens that can appear here:\n)\nSyntax error in /home/nati/autoRE/Output/AlloyModels/AlloyModel__4.als at line 112 column 69:",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__4.als\t2026-06-08 14:05:23.696557947 -0500\n+++ Output/AlloyModels/AlloyModel__5.als\t2026-06-08 14:13:17.791507351 -0500\n@@ -109,11 +109,11 @@\n fun requestClassification(r: Request): one Classification {\n     one c: r.affects.classification |\n-        no c2: r.affects.classification | c2 != c and higherClass(c2, c)\n+        no c2: r.affects.classification | c2 != c and higherClass[c2, c]\n }\n \n-pred higherClass(h: Classification, l: Classification) {\n+pred higherClass[h: Classification, l: Classification] {\n     (h = CHigh and l in CMedium + CLow) or\n     (h = CMedium and l = CLow)\n }\n@@ -133,13 +133,13 @@\n         d.delegator.clearance in High + Medium + Low and\n         d.delegatee.clearance in High + Medium + Low and\n         d.delegator.clearance != d.delegatee.clearance and\n-        higherOrEqual(d.delegator.clearance, d.delegatee.clearance) and\n-        higherOrEqual(d.delegator.clearance, d.role.minClearance) and\n-        higherOrEqual(d.delegatee.clearance, d.role.minClearance)\n+        higherOrEqual[d.delegator.clearance, d.delegatee.clearance] and\n+        higherOrEqual[d.delegator.clearance, d.role.minClearance] and\n+        higherOrEqual[d.delegatee.clearance, d.role.minClearance]\n }\n \n-pred higherOrEqual(h: Clearance, l: Clearance) {\n+pred higherOrEqual[h: Clearance, l: Clearance] {\n     (h = High) or (h = Medium and l != High) or (h = Low and l = Low)\n }\n \n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error at line 110 in fun requestClassification",
+    "syntax_error_context": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+    "resolved_target_issue": null,
+    "fix_pattern_detected": "5 total fix attempts for this issue. Similar approach used 5 times: \"Correct the quantifier domain in the requestClassification function by parenthesizing the set subtraction, to resolve a syntax error and ensure Alloy 6 parser acceptance.\"",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T14:13:17.792751"
+  },
+  {
+    "iteration_id": 6,
+    "model_file_location": "Output/AlloyModels/AlloyModel__6.als",
+    "fix_intent": "Correct the Alloy 6 function requestClassification by removing the curly braces and using a quantified expression as the function body, to comply with Alloy 6 syntax rules for function definitions.",
+    "source_ref": "Evaluator feedback: syntax error in function requestClassification due to use of curly-brace set comprehension as function body.",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__5.als\t2026-06-08 14:13:17.791507351 -0500\n+++ Output/AlloyModels/AlloyModel__6.als\t2026-06-08 17:39:38.724923529 -0500\n@@ -108,8 +108,7 @@\n \n fun requestClassification(r: Request): one Classification {\n-    one c: r.affects.classification |\n-        no c2: r.affects.classification | c2 != c and higherClass[c2, c]\n+    one c: r.affects.classification | no c2: r.affects.classification | c2 != c and higherClass[c2, c]\n }\n \n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error at line 110 in fun requestClassification",
+    "syntax_error_context": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+    "resolved_target_issue": false,
+    "fix_pattern_detected": "First attempt at fixing this issue",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T17:39:38.726005"
+  },
+  {
+    "iteration_id": 7,
+    "model_file_location": "Output/AlloyModels/AlloyModel__7.als",
+    "fix_intent": "Refactor the function requestClassification to properly return the maximal classification among affected objects, by defining and using a helper function maxClass since Alloy 6 does not have a built-in max[], thus resolving the function-body type error.",
+    "source_ref": "Evaluator feedback: requestClassification function body yields a Boolean, not a value, and must use an expression returning one Classification; fix by introducing a maxClass helper.",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__6.als\t2026-06-08 17:39:38.724923529 -0500\n+++ Output/AlloyModels/AlloyModel__7.als\t2026-06-08 17:40:35.194061403 -0500\n@@ -106,17 +106,22 @@\n     all o: Obj | one o.classification\n }\n \n-fun requestClassification(r: Request): one Classification {\n-    one c: r.affects.classification | no c2: r.affects.classification | c2 != c and higherClass[c2, c]\n-}\n-\n pred higherClass[h: Classification, l: Classification] {\n     (h = CHigh and l in CMedium + CLow) or\n     (h = CMedium and l = CLow)\n }\n \n+fun maxClass(cs: set Classification): one Classification {\n+    one c: cs | no c2: cs - c | higherClass[c2, c]\n+}\n+\n+fun requestClassification(r: Request): one Classification {\n+    maxClass(r.affects.classification)\n+}\n+\n fact RequestSubmissionConstraint {\n     all r: Request | \n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error at line 116 in fun maxClass",
+    "syntax_error_context": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+    "resolved_target_issue": true,
+    "fix_pattern_detected": null,
+    "is_reverted": false,
+    "timestamp": "2026-06-08T17:40:35.195182"
+  },
+  {
+    "iteration_id": 8,
+    "model_file_location": "Output/AlloyModels/AlloyModel__8.als",
+    "fix_intent": "Refactor the maxClass function so that its body returns a value of type Classification by using a set comprehension and quantifiers, thereby resolving the type error in Alloy 6.",
+    "source_ref": "Evaluator feedback: function maxClass uses a Boolean-yielding quantifier expression, not a value; must use set comprehension to yield Classification value per Alloy 6 syntax.",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__7.als\t2026-06-08 17:40:35.194061403 -0500\n+++ Output/AlloyModels/AlloyModel__8.als\t2026-06-08 17:41:31.224515346 -0500\n@@ -114,7 +114,7 @@\n \n fun maxClass(cs: set Classification): one Classification {\n-    one c: cs | no c2: cs - c | higherClass[c2, c]\n+    one c: cs | all c2: cs - c | not higherClass[c2, c]\n }\n \n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error at line 116 in fun maxClass",
+    "syntax_error_context": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+    "resolved_target_issue": false,
+    "fix_pattern_detected": "First attempt at fixing this issue",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T17:41:31.225748"
+  },
+  {
+    "iteration_id": 9,
+    "model_file_location": "Output/AlloyModels/AlloyModel__9.als",
+    "fix_intent": "Refactor the maxClass function so its body returns a value of type Classification by using a set comprehension and let-binding, thereby resolving the Alloy 6 type error.",
+    "source_ref": "Evaluator feedback: function maxClass uses a Boolean-yielding quantifier expression, not a value; must use set comprehension to yield Classification value per Alloy 6 syntax.",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__8.als\t2026-06-08 17:41:31.224515346 -0500\n+++ Output/AlloyModels/AlloyModel__9.als\t2026-06-08 17:42:27.262313816 -0500\n@@ -114,7 +114,7 @@\n \n fun maxClass(cs: set Classification): one Classification {\n-    one c: cs | all c2: cs - c | not higherClass[c2, c]\n+    let maxes = {c: cs | all c2: cs - c | not higherClass[c2, c]} | one maxes\n }\n \n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error at line 116 in fun maxClass",
+    "syntax_error_context": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+    "resolved_target_issue": false,
+    "fix_pattern_detected": "First attempt at fixing this issue",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T17:42:27.263490"
+  },
+  {
+    "iteration_id": 10,
+    "model_file_location": "Output/AlloyModels/AlloyModel__10.als",
+    "fix_intent": "Refactor the maxClass function to use the Alloy 6 idiom for returning a unique maximal element by classification, replacing the set comprehension with a \"one c: cs | ...\" quantifier to resolve the type error and conform to Alloy 6 syntax.",
+    "source_ref": "Evaluator feedback: function maxClass uses a Boolean-yielding quantifier expression, not a value; must use set comprehension to yield Classification value per Alloy 6 syntax. Repair instructions specify replacing the function body with \"one c: cs | all c2: cs - c | not higherClass[c2, c]\".",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__9.als\t2026-06-08 17:42:27.262313816 -0500\n+++ Output/AlloyModels/AlloyModel__10.als\t2026-06-08 17:43:21.953949983 -0500\n@@ -114,7 +114,7 @@\n \n fun maxClass(cs: set Classification): one Classification {\n-    let maxes = {c: cs | all c2: cs - c | not higherClass[c2, c]} | one maxes\n+    one c: cs | all c2: cs - c | not higherClass[c2, c]\n }\n \n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error at line 116 in fun maxClass",
+    "syntax_error_context": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+    "resolved_target_issue": false,
+    "fix_pattern_detected": "First attempt at fixing this issue",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T17:43:21.955200"
+  },
+  {
+    "iteration_id": 11,
+    "model_file_location": "Output/AlloyModels/AlloyModel__11.als",
+    "fix_intent": "Refactor the function maxClass to use a set comprehension and extract the unique maximal classification with the Alloy 6 idiom, so that it yields a value of type Classification as required, not a Boolean.",
+    "source_ref": "Evaluator feedback: function maxClass returns a Boolean due to use of quantifier, not a Classification. Repair instructions provided for correct Alloy 6 idiom.",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "This must be a formula expression.\nInstead, it has the following possible type(s):\n{this/Classification}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "This must be a set or relation.\nInstead, it has the following possible type(s):\n{PrimitiveBoolean}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__10.als\t2026-06-08 17:43:21.953949983 -0500\n+++ Output/AlloyModels/AlloyModel__11.als\t2026-06-08 17:44:16.220577971 -0500\n@@ -114,7 +114,7 @@\n \n fun maxClass(cs: set Classification): one Classification {\n-    one c: cs | all c2: cs - c | not higherClass[c2, c]\n+    one c: { c: cs | all c2: cs - c | not higherClass[c2, c] } | c\n }\n \n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error at line 117 in fun maxClass",
+    "syntax_error_context": "This must be a formula expression.\nInstead, it has the following possible type(s):\n{this/Classification}",
+    "resolved_target_issue": false,
+    "fix_pattern_detected": "First attempt at fixing this issue",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T17:44:16.221640"
+  },
+  {
+    "iteration_id": 12,
+    "model_file_location": "Output/AlloyModels/AlloyModel__12.als",
+    "fix_intent": "Refactor the function maxClass so that it correctly returns a value of type Classification, using Alloy 6 set subtraction idiom as per evaluator instructions, to ensure the function yields the unique maximal classification rather than a Boolean.",
+    "source_ref": "Evaluator feedback: function maxClass returns a Boolean due to use of quantifier, not a Classification. Repair instructions and Alloy 6 idiom provided for unique maximal element selection.",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "Name cannot be resolved; possible incorrect function/predicate call; perhaps you used ( ) when you should have used [ ]\nThis cannot be a correct call to fun this/maxClass.\nThe parameters are\ncs: {this/Classification}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "This must be a formula expression.\nInstead, it has the following possible type(s):\n{this/Classification}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__11.als\t2026-06-08 17:44:16.220577971 -0500\n+++ Output/AlloyModels/AlloyModel__12.als\t2026-06-08 17:45:10.601863998 -0500\n@@ -114,7 +114,7 @@\n \n fun maxClass(cs: set Classification): one Classification {\n-    one c: { c: cs | all c2: cs - c | not higherClass[c2, c] } | c\n+    cs - { c: cs | some c2: cs - c | higherClass[c2, c] }\n }\n \n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error at line 122 in fun requestClassification",
+    "syntax_error_context": "Name cannot be resolved; possible incorrect function/predicate call; perhaps you used ( ) when you should have used [ ]\nThis cannot be a correct call to fun this/maxClass.\nThe parameters are\ncs: {this/Classification}",
+    "resolved_target_issue": false,
+    "fix_pattern_detected": "First attempt at fixing this issue",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T17:45:10.603073"
+  },
+  {
+    "iteration_id": 13,
+    "model_file_location": "Output/AlloyModels/AlloyModel__13.als",
+    "fix_intent": "Correct all function and predicate calls to use Alloy 6’s required bracket [ ] syntax instead of parentheses ( ), in accordance with the evaluator’s feedback.",
+    "source_ref": "Evaluator feedback: function and predicate calls must use brackets in Alloy 6 (e.g., maxClass[r.affects.classification]), not parentheses.",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "This cannot be a legal relational join where\nleft hand side is this/SysState (type = {this/SysState})\nright hand side is t (type = {this/Time})",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "Name cannot be resolved; possible incorrect function/predicate call; perhaps you used ( ) when you should have used [ ]\nThis cannot be a correct call to fun this/maxClass.\nThe parameters are\ncs: {this/Classification}",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__12.als\t2026-06-08 17:45:10.601863998 -0500\n+++ Output/AlloyModels/AlloyModel__13.als\t2026-06-08 17:46:02.468894201 -0500\n@@ -119,7 +119,7 @@\n \n fun requestClassification(r: Request): one Classification {\n-    maxClass(r.affects.classification)\n+    maxClass[r.affects.classification]\n }\n \n@@ -256,7 +256,7 @@\n \n pred R1R2 {\n-    R1\n+    R1[]\n     all t: Time |\n         let s = stateAt[t] |\n         s.mode = EmergencyMode implies some t2: Time | t2 > t and stateAt[t2].mode = NormalMode\n@@ -264,7 +264,7 @@\n \n pred R1R2R3 {\n-    R1R2\n+    R1R2[]\n     all t: Time |\n@@ -280,13 +280,13 @@\n \n pred R1R2R3R4 {\n-    R1R2R3\n+    R1R2R3[]\n }\n \n pred All_Requirements {\n-    R1R2R3R4\n+    R1R2R3R4[]\n }\n \n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error at line 241 in fun stateAt",
+    "syntax_error_context": "This cannot be a legal relational join where\nleft hand side is this/SysState (type = {this/SysState})\nright hand side is t (type = {this/Time})",
+    "resolved_target_issue": true,
+    "fix_pattern_detected": null,
+    "is_reverted": false,
+    "timestamp": "2026-06-08T17:46:02.470106"
+  },
+  {
+    "iteration_id": 14,
+    "model_file_location": "Output/AlloyModels/AlloyModel__14.als",
+    "fix_intent": "Rewrite the stateAt function so that it selects the unique SysState instance whose t field equals the argument t, using set comprehension, to avoid invalid dot-notation on the SysState signature.",
+    "source_ref": "Evaluator feedback: misuse of dot-notation in stateAt function (SysState.t = t); must use set comprehension {s: SysState | s.t = t}.",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "This cannot be a legal relational join where\nleft hand side is s (type = {this/SysState})\nright hand side is t (type = {this/Time})",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "This cannot be a legal relational join where\nleft hand side is this/SysState (type = {this/SysState})\nright hand side is t (type = {this/Time})",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__13.als\t2026-06-08 17:46:02.468894201 -0500\n+++ Output/AlloyModels/AlloyModel__14.als\t2026-06-08 17:46:58.863629498 -0500\n@@ -44,6 +44,7 @@\n \n sig SysState {\n+    t: one Time, // <--- field for temporal mapping\n     mode: one Mode,\n     assigned: User -> Role,\n@@ -238,7 +239,7 @@\n \n-fun stateAt[t: Time]: one SysState { SysState.t = t }\n+fun stateAt[t: Time]: one SysState { { s: SysState | s.t = t } }\n \n pred baseline {}\n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error at line 242 in fun stateAt",
+    "syntax_error_context": "This cannot be a legal relational join where\nleft hand side is s (type = {this/SysState})\nright hand side is t (type = {this/Time})",
+    "resolved_target_issue": false,
+    "fix_pattern_detected": "First attempt at fixing this issue",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T17:46:58.864748"
+  },
+  {
+    "iteration_id": 15,
+    "model_file_location": "Output/AlloyModels/AlloyModel__15.als",
+    "fix_intent": "Rewrite the stateAt function to use the one quantifier so it returns the unique SysState whose t field equals the argument t, ensuring Alloy 6 compliance and resolving the invalid use of set comprehension for a one-valued function.",
+    "source_ref": "Evaluator feedback: misuse of set comprehension in stateAt function; must use a one quantifier to return a single SysState atom, not a singleton set.",
+    "current_result": {
+      "syntax": "Error",
+      "error_message": "This cannot be a legal relational join where\nleft hand side is s (type = {this/SysState})\nright hand side is t (type = {this/Time})",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "This cannot be a legal relational join where\nleft hand side is s (type = {this/SysState})\nright hand side is t (type = {this/Time})",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "--- Output/AlloyModels/AlloyModel__14.als\t2026-06-08 17:46:58.863629498 -0500\n+++ Output/AlloyModels/AlloyModel__15.als\t2026-06-08 17:47:53.884121514 -0500\n@@ -239,7 +239,7 @@\n \n-fun stateAt[t: Time]: one SysState { { s: SysState | s.t = t } }\n+fun stateAt[t: Time]: one SysState { one s: SysState | s.t = t }\n \n pred baseline {}\n",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "outcome_classification": "pending",
+    "issue": "syntax error at line 242 in fun stateAt",
+    "syntax_error_context": "This cannot be a legal relational join where\nleft hand side is s (type = {this/SysState})\nright hand side is t (type = {this/Time})",
+    "resolved_target_issue": false,
+    "fix_pattern_detected": "First attempt at fixing this issue",
+    "is_reverted": false,
+    "timestamp": "2026-06-08T17:47:53.886192"
+  },
+  {
+    "iteration_id": 16,
+    "model_file_location": "Output/AlloyModels/AlloyModel__16.als",
+    "fix_intent": "Rewrite the stateAt function to use an explicit one quantifier to return the unique SysState whose t field equals the argument t, ensuring Alloy 6 compliance and resolving the invalid use of set comprehension for a one-valued function.",
+    "source_ref": "Evaluator feedback: misuse of set comprehension in stateAt function; must use a one quantifier to return a single SysState atom, not a singleton set.",
+    "current_result": {
+      "syntax": "Pending",
+      "error_message": null,
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "previous_result": {
+      "syntax": "Error",
+      "error_message": "This cannot be a legal relational join where\nleft hand side is s (type = {this/SysState})\nright hand side is t (type = {this/Time})",
+      "satisfied_predicates": [],
+      "unsatisfied_predicates": [],
+      "counterexamples": [],
+      "no_counterexample": []
+    },
+    "updated_lines": "",
+    "expected_impact": {
+      "satToUnsat": [],
+      "unsatToSat": [],
+      "passToFail": [],
+      "failToPass": []
+    },
+    "actual_impact": null,
+    "outcome_classification": "pending",
+    "issue": null,
+    "syntax_error_context": null,
+    "resolved_target_issue": null,
+    "fix_pattern_detected": null,
+    "is_reverted": false,
+    "timestamp": "2026-06-08T17:48:49.159065"
+  }
+]

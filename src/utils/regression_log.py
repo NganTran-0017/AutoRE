@@ -74,12 +74,19 @@ class RegressionLogEntry:
     updated_lines: str  # Diff between current and previous model
     expected_impact: ImpactAnalysis  # RE agent's prediction
     actual_impact: Optional[ImpactAnalysis] = None  # Filled by Evaluator
-    outcome_classification: str = "pending"  # "expected_improvement", "unintended_regression", "spec_clarification: comment", or "pending"
+    outcome_classification: str = "pending"  # LLM: "expected_improvement" / "unintended_regression" / "spec_clarification: comment"; deterministic fallback (see derive_outcome_classification): "initial_verification" / "syntax_error_blocked" / "no_improvement" / "unclassified" variants. "pending" only transiently before step-4 evaluation.
     issue: Optional[str] = None  # Description of issues (e.g., "syntax error in fact ExistingSystem; unsat predicate: R1R2")
     syntax_error_context: Optional[str] = None  # Context field from syntax_error dictionary (for error message comparison)
-    resolved_target_issue: Optional[bool] = None  # True if target issue resolved, False if not, None for first iteration
+    resolved_target_issue: Optional[bool] = None  # True if target issue resolved, False if not, None for first iteration. Flipped back to False by update_resolution_statuses if the issue recurs (oscillation).
+    resolution_status: Optional[Dict[str, Any]] = None  # Provisional-resolution tracking: {'status': 'temporarily_absent'|'resolved_confirmed'|'resolution_reverted', 'target_issue', 'target_signature', 'recurred_at'?, 'confirmed_at'?}
     fix_pattern_detected: Optional[str] = None  # Pattern note if same fix approach tried multiple times (e.g., "Fix approach 'add guard constraint' attempted 3 times")
     is_reverted: bool = False  # True if this iteration reverted to a previous executable model
+    evaluator_feedback: Optional[str] = None  # Full feedback from Evaluator (GenerateSemanticFeedback/RefineFeedback/GenerateSyntaxRepairInstruction)
+    error_signature: Optional[Dict[str, Any]] = None  # Normalized error signature from ErrorNormalizer (stable, location-independent)
+    issue_pattern: Optional[Dict[str, Any]] = None  # Cross-iteration pattern classification from IssuePatternTracker
+    semantic_issue_persistence: Optional[Dict[str, Any]] = None  # Persistence of unsat predicates/counterexamples from SemanticIssueTracker
+    repair_escalation: Optional[Dict[str, Any]] = None  # Escalation decision from RepairPlateauDetector (consumed by Evaluator/RE prompts)
+    repair_signature: Optional[Dict[str, Any]] = None  # Normalized signature of the repair PRESCRIBED at this iteration (from normalize_repair): {'operation_families', 'target', 'strategy', 'normalized_signature'}
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_dict(self) -> Dict[str, Any]:
@@ -97,8 +104,15 @@ class RegressionLogEntry:
             "issue": self.issue,
             "syntax_error_context": self.syntax_error_context,
             "resolved_target_issue": self.resolved_target_issue,
+            "resolution_status": self.resolution_status,
             "fix_pattern_detected": self.fix_pattern_detected,
             "is_reverted": self.is_reverted,
+            "evaluator_feedback": self.evaluator_feedback,
+            "error_signature": self.error_signature,
+            "issue_pattern": self.issue_pattern,
+            "semantic_issue_persistence": self.semantic_issue_persistence,
+            "repair_escalation": self.repair_escalation,
+            "repair_signature": self.repair_signature,
             "timestamp": self.timestamp
         }
 
@@ -118,8 +132,15 @@ class RegressionLogEntry:
             issue=data.get("issue"),
             syntax_error_context=data.get("syntax_error_context"),
             resolved_target_issue=data.get("resolved_target_issue"),
+            resolution_status=data.get("resolution_status"),
             fix_pattern_detected=data.get("fix_pattern_detected"),
             is_reverted=data.get("is_reverted", False),
+            evaluator_feedback=data.get("evaluator_feedback"),
+            error_signature=data.get("error_signature"),
+            issue_pattern=data.get("issue_pattern"),
+            semantic_issue_persistence=data.get("semantic_issue_persistence"),
+            repair_escalation=data.get("repair_escalation"),
+            repair_signature=data.get("repair_signature"),
             timestamp=data.get("timestamp", datetime.now().isoformat())
         )
 
@@ -137,6 +158,10 @@ class RegressionLog:
         self.log_path = log_path or Path("memory/regression_log.json")
         self.entries: List[RegressionLogEntry] = []
 
+        # Index: maps error symbols to list of iteration IDs with that error
+        # Example: {"pred Next": [0, 3, 5], "fact DelegationClearance": [1, 4]}
+        self.error_symbol_index: Dict[str, List[int]] = {}
+
         # Load existing log
         if self.log_path.exists():
             self._load_from_file()
@@ -147,6 +172,7 @@ class RegressionLog:
         Used when starting fresh from iteration 0.
         """
         self.entries = []
+        self.error_symbol_index = {}
         if self.log_path.exists():
             self.log_path.unlink()  # Delete the file
         print("  Regression log cleared (fresh start)")
@@ -203,6 +229,25 @@ class RegressionLog:
                     json.dump([e.to_dict() for e in self.entries], f, indent=2)
                 print(f"  📋 Regression log saved to: {output_file}")
 
+    def save_error_symbol_index(self) -> None:
+        """Save error symbol index to Output/RegressionLog directory."""
+        from datetime import datetime
+        import os
+        
+        # Create Output/RegressionLog directory if it doesn't exist
+        output_dir = Path("Output/RegressionLog")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Generate filename with current date (MMDD format)
+        date_suffix = datetime.now().strftime("%m%d")
+        output_file = output_dir / f"SimilarIssues_{date_suffix}.json"
+        
+        # Save index to file
+        with open(output_file, 'w') as f:
+            json.dump(self.error_symbol_index, f, indent=2)
+        
+        print(f"  📊 Error symbol index saved to: {output_file}")
+
     def add_entry(self, entry: RegressionLogEntry) -> None:
         """
         Add a new regression log entry.
@@ -211,6 +256,15 @@ class RegressionLog:
             entry: RegressionLogEntry to add
         """
         self.entries.append(entry)
+
+        # Update error symbol index
+        if entry.issue and " in " in entry.issue:
+            symbol = entry.issue.split(" in ", 1)[1].strip()
+            if symbol:
+                if symbol not in self.error_symbol_index:
+                    self.error_symbol_index[symbol] = []
+                self.error_symbol_index[symbol].append(entry.iteration_id)
+
         self._save_to_file()
 
     def update_actual_impact(
@@ -244,6 +298,18 @@ class RegressionLog:
             if entry.iteration_id == iteration_id:
                 return entry
         return None
+
+    def get_iterations_for_symbol(self, symbol: str) -> List[int]:
+        """
+        Get list of iteration IDs that had errors in the given symbol.
+
+        Args:
+            symbol: Error symbol (e.g., "pred Next", "fact DelegationClearance")
+
+        Returns:
+            List of iteration IDs with errors in this symbol, in chronological order
+        """
+        return self.error_symbol_index.get(symbol, [])
 
     def get_recent_entries(self, count: int = 3) -> List[RegressionLogEntry]:
         """
@@ -385,6 +451,231 @@ class RegressionLog:
 
         return "\n".join(lines)
 
+    def format_for_prompt_filtered(self, current_analysis: Dict[str, Any], count: int = 3) -> str:
+        """
+        Format regression log entries, filtering by relevance to current issues.
+        
+        Only shows history for the same types of issues currently present:
+        - If current has syntax errors, show previous syntax error attempts (in same symbol)
+        - If current has counterexamples, show previous attempts for same assertions
+        - If current has unsat predicates, show previous attempts for same predicates
+        
+        Args:
+            current_analysis: Current analyzer results to determine relevant issues
+            count: Maximum number of relevant entries to include
+            
+        Returns:
+            Formatted string with only relevant regression history
+        """
+        # Determine current issues
+        has_syntax_errors = current_analysis.get('has_syntax_errors', False)
+
+        # Extract counterexample command names
+        current_counterexamples_raw = current_analysis.get('counterexamples', [])
+        if current_counterexamples_raw and isinstance(current_counterexamples_raw[0], dict):
+            current_counterexamples = {ce.get('command_name', '') for ce in current_counterexamples_raw}
+        else:
+            current_counterexamples = set(current_counterexamples_raw)
+
+        # Extract unsat predicate names
+        current_unsat_raw = current_analysis.get('unsat_run_commands', [])
+        if current_unsat_raw and isinstance(current_unsat_raw[0], dict):
+            # Extract predicate names if it's a dict
+            current_unsat = {pred.get('name', '') for pred in current_unsat_raw}
+        else:
+            current_unsat = set(current_unsat_raw)
+
+        # Debug logging
+        _debug_log = lambda msg: print(f"[REGRESSION_FILTER] {msg}")
+        _debug_log(f"Filtering regression log for current issues:")
+        _debug_log(f"  Has syntax errors: {has_syntax_errors}")
+        _debug_log(f"  Current counterexamples: {current_counterexamples}")
+        _debug_log(f"  Current unsat predicates: {current_unsat}")
+        
+        # Extract current syntax error symbol if applicable
+        current_syntax_symbol = None
+        if has_syntax_errors:
+            current_entry = self.get_entry(len(self.entries) - 1) if self.entries else None
+            if current_entry and current_entry.issue and " in " in current_entry.issue:
+                current_syntax_symbol = current_entry.issue.split(" in ", 1)[1].strip()
+        
+        # Filter entries by relevance
+        relevant_entries = []
+        
+        for entry in reversed(self.entries[:-1]):  # Exclude current iteration
+            is_relevant = False
+            
+            # Check if this entry relates to current issues
+            if has_syntax_errors:
+                # Only show previous syntax error attempts in the same symbol
+                if entry.issue and "syntax error" in entry.issue.lower():
+                    entry_symbol = None
+                    if " in " in entry.issue:
+                        entry_symbol = entry.issue.split(" in ", 1)[1].strip()
+                    if entry_symbol == current_syntax_symbol:
+                        is_relevant = True
+            
+            else:
+                # Check for matching counterexamples
+                if current_counterexamples and entry.current_result:
+                    entry_ces = set(entry.current_result.counterexamples or [])
+                    if entry_ces & current_counterexamples:  # Intersection
+                        is_relevant = True
+                
+                # Check for matching unsat predicates
+                if current_unsat and entry.current_result:
+                    entry_unsat = set(entry.current_result.unsatisfied_predicates or [])
+                    if entry_unsat & current_unsat:  # Intersection
+                        is_relevant = True
+            
+            if is_relevant:
+                relevant_entries.append(entry)
+                _debug_log(f"  ✓ Iteration {entry.iteration_id} is relevant: {entry.issue}")
+                if len(relevant_entries) >= count:
+                    break
+            else:
+                _debug_log(f"  ✗ Iteration {entry.iteration_id} not relevant: {entry.issue}")
+
+        # Reverse to show chronologically
+        relevant_entries.reverse()
+
+        _debug_log(f"Found {len(relevant_entries)} relevant entries out of {len(self.entries)-1} previous iterations")
+
+        # Get current entry and previous iteration's issue
+        current_entry = self.entries[-1] if self.entries else None  # Current iteration
+        previous_issue = "None"
+        if len(self.entries) >= 2:
+            prev_entry = self.entries[-2]  # Previous iteration
+            if prev_entry.issue:
+                previous_issue = prev_entry.issue
+
+        # Start formatting with previous model issue
+        lines = []
+        lines.append("PREVIOUS MODEL ISSUE:")
+        lines.append(f"{previous_issue}")
+        lines.append("")
+
+        # Show Result Change from previous iteration to current iteration
+        if current_entry and current_entry.previous_result and current_entry.current_result:
+            prev = current_entry.previous_result  # Previous iteration's result
+            curr = current_entry.current_result   # Current iteration's result
+            lines.append("RESULT CHANGE (Previous → Current):")
+            lines.append(f"  Syntax: {prev.syntax} → {curr.syntax}")
+            if curr.syntax == "Error" and curr.error_message:
+                lines.append(f"  Error: {curr.error_message}")
+
+            prev_sat = ', '.join(prev.satisfied_predicates) if prev.satisfied_predicates else 'None'
+            curr_sat = ', '.join(curr.satisfied_predicates) if curr.satisfied_predicates else 'None'
+            lines.append(f"  Satisfied Predicates: [{prev_sat}] → [{curr_sat}]")
+
+            prev_unsat = ', '.join(prev.unsatisfied_predicates) if prev.unsatisfied_predicates else 'None'
+            curr_unsat = ', '.join(curr.unsatisfied_predicates) if curr.unsatisfied_predicates else 'None'
+            lines.append(f"  Unsatisfied Predicates: [{prev_unsat}] → [{curr_unsat}]")
+
+            prev_ce = ', '.join(prev.counterexamples) if prev.counterexamples else 'None'
+            curr_ce = ', '.join(curr.counterexamples) if curr.counterexamples else 'None'
+            lines.append(f"  Counterexamples: [{prev_ce}] → [{curr_ce}]")
+
+            prev_no_ce = ', '.join(prev.no_counterexample) if prev.no_counterexample else 'None'
+            curr_no_ce = ', '.join(curr.no_counterexample) if curr.no_counterexample else 'None'
+            lines.append(f"  Passing Assertions: [{prev_no_ce}] → [{curr_no_ce}]")
+            lines.append("")
+
+        if not relevant_entries:
+            lines.append("RELEVANT MODEL UPDATE HISTORY:")
+            lines.append("No relevant regression history for current issues.")
+            return '\n'.join(lines)
+
+        # Format the relevant entries (reuse existing formatting logic)
+        lines.append("RELEVANT MODEL UPDATE HISTORY (filtered by current issues):")
+        lines.append("")
+        
+        for entry in relevant_entries:
+            lines.append(f"--- Iteration {entry.iteration_id} ---")
+            lines.append(f"Fix Intent: {entry.fix_intent}")
+            lines.append(f"Source: {entry.source_ref}")
+            
+            # Results comparison
+            prev = entry.previous_result
+            curr = entry.current_result
+            if prev:
+                lines.append(f"Result Change:")
+                lines.append(f"  Syntax: {prev.syntax} → {curr.syntax}")
+                if curr.syntax == "Error" and curr.error_message:
+                    lines.append(f"  Error: {curr.error_message}")
+                
+                # Satisfied predicates comparison
+                prev_sat = ', '.join(prev.satisfied_predicates) if prev.satisfied_predicates else 'None'
+                curr_sat = ', '.join(curr.satisfied_predicates) if curr.satisfied_predicates else 'None'
+                lines.append(f"  Satisfied Predicates: [{prev_sat}] → [{curr_sat}]")
+                
+                # Unsatisfied predicates comparison
+                prev_unsat = ', '.join(prev.unsatisfied_predicates) if prev.unsatisfied_predicates else 'None'
+                curr_unsat = ', '.join(curr.unsatisfied_predicates) if curr.unsatisfied_predicates else 'None'
+                lines.append(f"  Unsatisfied Predicates: [{prev_unsat}] → [{curr_unsat}]")
+                
+                # Counterexamples comparison
+                prev_ce = ', '.join(prev.counterexamples) if prev.counterexamples else 'None'
+                curr_ce = ', '.join(curr.counterexamples) if curr.counterexamples else 'None'
+                lines.append(f"  Counterexamples: [{prev_ce}] → [{curr_ce}]")
+                
+                # No counterexample comparison
+                prev_no_ce = ', '.join(prev.no_counterexample) if prev.no_counterexample else 'None'
+                curr_no_ce = ', '.join(curr.no_counterexample) if curr.no_counterexample else 'None'
+                lines.append(f"  Passing Assertions: [{prev_no_ce}] → [{curr_no_ce}]")
+            else:
+                lines.append(f"Current Result:")
+                lines.append(f"  Syntax: {curr.syntax}")
+                if curr.syntax == "Error" and curr.error_message:
+                    lines.append(f"  Error: {curr.error_message}")
+                sat = ', '.join(curr.satisfied_predicates) if curr.satisfied_predicates else 'None'
+                lines.append(f"  Satisfied Predicates: [{sat}]")
+                unsat = ', '.join(curr.unsatisfied_predicates) if curr.unsatisfied_predicates else 'None'
+                lines.append(f"  Unsatisfied Predicates: [{unsat}]")
+                ce = ', '.join(curr.counterexamples) if curr.counterexamples else 'None'
+                lines.append(f"  Counterexamples: [{ce}]")
+                no_ce = ', '.join(curr.no_counterexample) if curr.no_counterexample else 'None'
+                lines.append(f"  Passing Assertions: [{no_ce}]")
+            
+            # Impact
+            if entry.actual_impact:
+                actual = entry.actual_impact
+                lines.append(f"Actual Impact:")
+                if actual.unsat_to_sat:
+                    lines.append(f"  UNSAT→SAT: {', '.join(actual.unsat_to_sat)}")
+                if actual.sat_to_unsat:
+                    lines.append(f"  SAT→UNSAT: {', '.join(actual.sat_to_unsat)}")
+                if actual.fail_to_pass:
+                    lines.append(f"  FAIL→PASS: {', '.join(actual.fail_to_pass)}")
+                if actual.pass_to_fail:
+                    lines.append(f"  PASS→FAIL: {', '.join(actual.pass_to_fail)}")
+                lines.append(f"Outcome: {entry.outcome_classification}")
+            
+            # Previous Result (full details)
+            if entry.previous_result:
+                prev = entry.previous_result
+                lines.append(f"Previous Result:")
+                lines.append(f"  Syntax: {prev.syntax}")
+                if prev.syntax == "Error" and prev.error_message:
+                    lines.append(f"  Error: {prev.error_message}")
+                prev_sat = ', '.join(prev.satisfied_predicates) if prev.satisfied_predicates else 'None'
+                lines.append(f"  Satisfied Predicates: [{prev_sat}]")
+                prev_unsat = ', '.join(prev.unsatisfied_predicates) if prev.unsatisfied_predicates else 'None'
+                lines.append(f"  Unsatisfied Predicates: [{prev_unsat}]")
+                prev_ce = ', '.join(prev.counterexamples) if prev.counterexamples else 'None'
+                lines.append(f"  Counterexamples: [{prev_ce}]")
+                prev_no_ce = ', '.join(prev.no_counterexample) if prev.no_counterexample else 'None'
+                lines.append(f"  Passing Assertions: [{prev_no_ce}]")
+            
+            # Updated Lines (already filtered to exclude comments)
+            if entry.updated_lines:
+                lines.append(f"Updated Lines (diff):")
+                lines.append(entry.updated_lines)
+            
+            lines.append("")
+        
+        return '\n'.join(lines)
+
     def _save_to_file(self) -> None:
         """Save regression log to JSON file."""
         if not self.log_path:
@@ -414,6 +705,16 @@ class RegressionLog:
                 return
 
         self.entries = [RegressionLogEntry.from_dict(entry) for entry in data]
+
+        # Rebuild error symbol index from loaded entries
+        self.error_symbol_index = {}
+        for entry in self.entries:
+            if entry.issue and " in " in entry.issue:
+                symbol = entry.issue.split(" in ", 1)[1].strip()
+                if symbol:
+                    if symbol not in self.error_symbol_index:
+                        self.error_symbol_index[symbol] = []
+                    self.error_symbol_index[symbol].append(entry.iteration_id)
 
 
 
@@ -454,17 +755,97 @@ def _extract_error_message_from_context(context: str) -> str:
     return context.strip()
 
 
+def count_non_comment_lines_between(file_path: str, line1: int, line2: int) -> int:
+    """
+    Count non-comment lines between two line numbers in an Alloy file.
+    
+    This helps determine if two syntax errors are truly close in code distance,
+    even if they appear far apart due to intervening comments.
+    
+    Args:
+        file_path: Path to the Alloy model file
+        line1: First line number (1-indexed)
+        line2: Second line number (1-indexed)
+    
+    Returns:
+        Number of non-comment lines between line1 and line2 (inclusive).
+        Falls back to abs(line2 - line1) if file cannot be read.
+    """
+    import os
+    
+    # Ensure line1 <= line2
+    if line1 > line2:
+        line1, line2 = line2, line1
+    
+    # Fallback value if we can't read the file
+    raw_distance = abs(line2 - line1)
+    
+    # Check if file exists
+    if not os.path.exists(file_path):
+        return raw_distance
+    
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = f.readlines()
+        
+        # Validate line numbers
+        if line1 < 1 or line2 > len(lines):
+            return raw_distance
+        
+        # Count non-comment lines
+        non_comment_count = 0
+        in_multiline_comment = False
+        
+        for i in range(line1 - 1, line2):  # Convert to 0-indexed
+            line = lines[i].strip()
+            
+            # Check for multi-line comment start
+            if '/*' in line:
+                in_multiline_comment = True
+            
+            # Check for multi-line comment end
+            if '*/' in line:
+                in_multiline_comment = False
+                continue  # Skip this line as it's part of comment
+            
+            # Skip if we're inside a multi-line comment
+            if in_multiline_comment:
+                continue
+            
+            # Skip single-line comments
+            if line.startswith('//'):
+                continue
+            
+            # Skip empty lines
+            if not line:
+                continue
+            
+            # This is a non-comment line
+            non_comment_count += 1
+        
+        return non_comment_count
+    
+    except Exception as e:
+        # On any error, fall back to raw distance
+        _debug_log(f"[NON_COMMENT_COUNT] Error reading {file_path}: {e}")
+        return raw_distance
+
+
 def count_consecutive_same_syntax_errors(
     regression_log_entries: List['RegressionLogEntry'],
     current_iteration: int,
     current_issue: str,
-    current_syntax_error: Optional[Dict[str, Any]] = None
-) -> int:
+    current_syntax_error: Optional[Dict[str, Any]] = None,
+    window: int = 7
+) -> Dict[str, int]:
     """
-    Count consecutive iterations with THE SAME syntax error ending at current iteration.
+    Count occurrences of THE SAME syntax error in previous iterations.
+
+    Returns both consecutive count (how many times in a row) and total count
+    (how many times within the recency window, even with gaps).
 
     Same syntax error is defined as:
-    1. Syntax error within +/-5 lines of previous error, AND
+    1. Syntax error within +/-5 non-comment lines of previous error, AND
     2. Same error message from context field (truncated at location info)
 
     Args:
@@ -472,16 +853,21 @@ def count_consecutive_same_syntax_errors(
         current_iteration: Current iteration number
         current_issue: Current syntax error issue description
         current_syntax_error: Current syntax_error dictionary (with context field)
+        window: How many iterations to look back over, including the current one.
+            Only occurrences within this window count toward 'total'.
 
     Returns:
-        Number of consecutive iterations with same syntax error (including current)
+        Dict with 'consecutive' and 'total' counts (both including current iteration)
     """
     import re
 
-    count = 0
+    # Initialize counts to 1 to represent the current iteration itself
+    consecutive_count = 1
+    total_count = 1
+    consecutive_broken = False  # Flag to stop consecutive counting after first mismatch
 
     if not current_issue:
-        return count
+        return {'consecutive': consecutive_count, 'total': total_count}
 
     # Extract line number and error message from current iteration
     current_line = _extract_line_number_from_issue(current_issue)
@@ -495,29 +881,42 @@ def count_consecutive_same_syntax_errors(
     if current_line is None:
         current_issue_normalized = current_issue.lower().strip()
 
-        for i in range(current_iteration, -1, -1):
+        # Loop through previous iterations within the recency window
+        for i in range(current_iteration - 1, -1, -1):
+            # Stop once we walk past the window (window includes current iteration)
+            if i < current_iteration - (window - 1):
+                break
             entry = next((e for e in regression_log_entries if e.iteration_id == i), None)
             if not entry or not entry.issue:
-                break
+                consecutive_broken = True
+                continue
 
             entry_issue_normalized = entry.issue.lower().strip()
             if entry_issue_normalized == current_issue_normalized:
-                count += 1
+                total_count += 1
+                if not consecutive_broken:
+                    consecutive_count += 1
             else:
-                break
+                consecutive_broken = True
 
-        return count
+        return {'consecutive': consecutive_count, 'total': total_count}
 
-    # Count backwards from current iteration, comparing both line numbers AND error messages
-    for i in range(current_iteration, -1, -1):
+    # Count backwards from previous iteration, comparing both line numbers AND error messages.
+    # Only iterations within the recency window count toward the total.
+    for i in range(current_iteration - 1, -1, -1):
+        # Stop once we walk past the window (window includes current iteration)
+        if i < current_iteration - (window - 1):
+            break
         entry = next((e for e in regression_log_entries if e.iteration_id == i), None)
         if not entry or not entry.issue:
-            break
+            consecutive_broken = True
+            continue
 
         # Check if entry has a syntax error
         if not entry.issue.lower().startswith("syntax error"):
-            # Hit a non-syntax-error iteration, stop counting
-            break
+            # Hit a non-syntax-error iteration
+            consecutive_broken = True
+            continue
 
         # Extract line number from entry issue
         entry_line = _extract_line_number_from_issue(entry.issue)
@@ -525,34 +924,94 @@ def count_consecutive_same_syntax_errors(
         if entry_line is None:
             # Can't parse line number from this entry, check exact match
             if entry.issue.lower().strip() == current_issue.lower().strip():
-                count += 1
+                total_count += 1
+                if not consecutive_broken:
+                    consecutive_count += 1
             else:
-                break
-        else:
-            # Check line number tolerance first (±5 lines)
-            if abs(entry_line - current_line) > 5:
-                # Different location, stop counting
-                break
-            
-            # Line numbers match - now check if error message also matches
-            # Extract error message from entry's stored context
-            entry_error_msg = ""
-            if entry.syntax_error_context:
-                entry_error_msg = _extract_error_message_from_context(entry.syntax_error_context)
-            
-            # Compare error messages (normalized - remove all whitespace variations)
-            # Normalize by: lowercasing, stripping edges, collapsing internal whitespace
-            current_msg_normalized = ' '.join(current_error_msg.strip().lower().split())
-            entry_msg_normalized = ' '.join(entry_error_msg.strip().lower().split())
-            
-            # Both conditions must match: line number (±5) AND error message
-            if current_msg_normalized == entry_msg_normalized:
-                count += 1
-            else:
-                # Different error message at similar location, stop counting
-                break
+                consecutive_broken = True
+            continue
 
-    return count
+        # Check line number tolerance (±5 non-comment lines)
+        raw_distance = abs(entry_line - current_line)
+        
+        is_close = False
+        if raw_distance <= 5:
+            is_close = True
+        else:
+            # Try non-comment distance calculation to account for comment lines
+            current_model_path = f"Output/AlloyModels/AlloyModel__{current_iteration}.als"
+            code_distance = count_non_comment_lines_between(
+                current_model_path,
+                min(entry_line, current_line),
+                max(entry_line, current_line)
+            )
+            
+            _debug_log(f"[SAME_ERROR_CHECK] Line distance: raw={raw_distance}, code={code_distance}")
+            
+            if code_distance <= 5:
+                is_close = True
+                _debug_log(f"[SAME_ERROR_CHECK] Errors close in code (within 5 non-comment lines)")
+
+        if not is_close:
+            # Different location
+            consecutive_broken = True
+            continue
+
+        # Extract symbol names from issue descriptions for comparison
+        # Format: "syntax error at line X in <symbol>"
+        current_symbol = ""
+        entry_symbol = ""
+
+        if " in " in current_issue:
+            current_symbol = current_issue.split(" in ", 1)[1].strip()
+        if " in " in entry.issue:
+            entry_symbol = entry.issue.split(" in ", 1)[1].strip()
+
+        # Extract error message from entry's stored context
+        entry_error_msg = ""
+        if entry.syntax_error_context:
+            entry_error_msg = _extract_error_message_from_context(entry.syntax_error_context)
+
+        # Compare error messages (normalized - remove all whitespace variations)
+        # Normalize by: lowercasing, stripping edges, collapsing internal whitespace
+        current_msg_normalized = ' '.join(current_error_msg.strip().lower().split())
+        entry_msg_normalized = ' '.join(entry_error_msg.strip().lower().split())
+
+        # Debug logging
+        _debug_log(f"[SAME_ERROR_CHECK] Comparing iteration {current_iteration} with {i}:")
+        _debug_log(f"  Current line: {current_line}, Entry line: {entry_line}, Diff: {abs(entry_line - current_line)}")
+        _debug_log(f"  Current symbol: '{current_symbol}', Entry symbol: '{entry_symbol}'")
+        _debug_log(f"  Current msg: '{current_msg_normalized[:80]}...'")
+        _debug_log(f"  Entry msg: '{entry_msg_normalized[:80]}...'")
+
+        # Check if symbols match (if both available)
+        if current_symbol and entry_symbol and current_symbol != entry_symbol:
+            # Different symbols - this is a different error
+            _debug_log(f"  Result: DIFFERENT symbol")
+            consecutive_broken = True
+            continue
+
+        # IMPORTANT: Only compare if BOTH error messages are non-empty
+        # If either is empty, we can't reliably determine if they're the same error
+        if not current_msg_normalized or not entry_msg_normalized:
+            # Missing error context - cannot determine if same error
+            # Be conservative: assume different error
+            _debug_log(f"  Result: STOP (missing context)")
+            consecutive_broken = True
+            continue
+
+        # All conditions must match: line number (±5) AND symbol AND error message
+        if current_msg_normalized == entry_msg_normalized:
+            total_count += 1
+            if not consecutive_broken:
+                consecutive_count += 1
+            _debug_log(f"  Result: SAME (consecutive={consecutive_count}, total={total_count})")
+        else:
+            # Different error message at similar location
+            _debug_log(f"  Result: DIFFERENT error message")
+            consecutive_broken = True
+
+    return {'consecutive': consecutive_count, 'total': total_count}
 
 
 def _extract_line_number_from_issue(issue: str) -> Optional[int]:
@@ -618,7 +1077,7 @@ def extract_issue_description(analysis_result: Dict[str, Any]) -> str:
                 match = re.search(r'CODE CONTEXT - COMPLETE BLOCK:\s*(.+?)\s*\(lines', code_snippet)
                 if match:
                     block_name = match.group(1).strip()
-                    issues.append(f"syntax error in {block_name}")
+                    issues.append(f"syntax error at line {line_num} in {block_name}")
                 else:
                     # Pattern 2: "CODE CONTEXT (lines X-Y):" - try to extract what's on the error line
                     # Look for lines with the error marker
@@ -660,8 +1119,16 @@ def extract_issue_description(analysis_result: Dict[str, Any]) -> str:
     # Check for unsatisfied predicates
     unsat_predicates = analysis_result.get('unsat_run_commands', [])
     if unsat_predicates:
-        pred_names = ', '.join(unsat_predicates)
-        issues.append(f"unsat predicate: {pred_names}")
+        # Extract just the predicate names
+        pred_names = []
+        for pred in unsat_predicates:
+            if isinstance(pred, dict):
+                pred_names.append(pred.get('name', 'unknown'))
+            else:
+                pred_names.append(str(pred))
+        if pred_names:
+            pred_str = ', '.join(pred_names)
+            issues.append(f"unsat predicate: {pred_str}")
     
     # Check for counterexamples (failed assertions)
     counterexamples = analysis_result.get('counterexamples', [])
@@ -670,7 +1137,7 @@ def extract_issue_description(analysis_result: Dict[str, Any]) -> str:
         ce_names = []
         for ce in counterexamples:
             if isinstance(ce, dict):
-                ce_names.append(ce.get('command', 'unknown'))
+                ce_names.append(ce.get('command_name', 'unknown'))
             else:
                 ce_names.append(str(ce))
         if ce_names:
@@ -804,7 +1271,7 @@ def detect_fix_pattern(
         similarity_matrix = cosine_similarity(embeddings)
 
         # Find clusters of similar fix approaches (similarity > 0.75)
-        similarity_threshold = 0.75
+        similarity_threshold = 0.80
         clusters = []
         used = set()
 
@@ -843,91 +1310,289 @@ def detect_fix_pattern(
     return f"{len(failed_fixes)} total fix attempts for this issue have failed"
 
 
+def _parse_issue_components(issue: str):
+    """
+    Parse an issue description into its components.
+
+    Handles the three historical syntax-error formats plus unsat-predicate and
+    counterexample lists (previously duplicated inline in
+    get_same_issue_failed_fixes for the current issue and for each entry).
+
+    Returns:
+        (syntax_block, syntax_construct, unsat_predicates, counterexamples)
+        where the first two are Optional[str] and the last two are sets.
+    """
+    import re
+
+    syntax_block = None
+    syntax_construct = None
+    unsat_preds = set()
+    counterexamples = set()
+
+    # Format 1 (current): "syntax error at line X in block_name"
+    syntax_match = re.search(r'syntax error at line \d+ in (.+?)(?:;|$)', issue)
+    if syntax_match:
+        syntax_block = syntax_match.group(1).strip()
+    else:
+        # Format 2 (old): "syntax error in fact ExistingSystem"
+        syntax_match = re.search(r'syntax error in (.+?)(?:;|$)', issue)
+        if syntax_match:
+            syntax_block = syntax_match.group(1).strip()
+        else:
+            # Format 3 (older): "syntax error at line 4 (open statement)"
+            syntax_match = re.search(r'syntax error at line \d+ \((.+?)\)', issue)
+            if syntax_match:
+                syntax_construct = syntax_match.group(1).strip()
+
+    unsat_match = re.search(r'unsat predicate: (.+?)(?:;|$)', issue)
+    if unsat_match:
+        unsat_preds = set(p.strip() for p in unsat_match.group(1).split(','))
+
+    ce_match = re.search(r'counterexample: (.+?)(?:;|$)', issue)
+    if ce_match:
+        counterexamples = set(c.strip() for c in ce_match.group(1).split(','))
+
+    return syntax_block, syntax_construct, unsat_preds, counterexamples
+
+
+def derive_outcome_classification(
+    has_syntax_errors: bool,
+    resolved_target_issue: Optional[bool],
+    has_previous_iteration: bool,
+    current_issue: Optional[str] = None,
+) -> str:
+    """
+    Deterministically classify an iteration's outcome from verification facts.
+
+    Used as a guaranteed fallback so entries never stay "pending":
+    InterpretResults (the LLM classifier) is skipped entirely on syntax-error
+    iterations and may fail to produce/parse a classification on semantic
+    ones; this derives an honest classification from data the workflow
+    already computed. The LLM classification, when available, overwrites it.
+
+    Returns one of:
+        "initial_verification: ..."   - first evaluated model, no prior fix to classify
+        "syntax_error_blocked: ..."   - model does not parse, resolution undeterminable
+        "no_improvement: ..."         - the targeted issue persists after the fix
+        "unintended_regression: ..."  - prior issue resolved but a new syntax error appeared
+        "expected_improvement: ..."   - the targeted issue was resolved
+        "unclassified: ..."           - no prior issue comparison was possible
+    """
+    if not has_previous_iteration:
+        if has_syntax_errors:
+            return "initial_verification: initial model does not parse"
+        return "initial_verification: first evaluation; no prior fix to classify"
+
+    if has_syntax_errors:
+        if resolved_target_issue is True:
+            return ("unintended_regression: previous target issue resolved "
+                    "but a new syntax error was introduced")
+        if resolved_target_issue is False:
+            return "no_improvement: syntax error persists after repair attempt"
+        return "syntax_error_blocked: model does not parse; verification skipped"
+
+    if resolved_target_issue is True:
+        # Deliberately provisional: a single absent iteration is not proof of
+        # resolution (oscillating errors). update_resolution_statuses upgrades
+        # this to expected_improvement after several clean iterations, or
+        # corrects it to no_improvement if the issue recurs.
+        if current_issue:
+            return f"provisional_improvement: target issue absent (confirmation pending); remaining issues: {current_issue}"
+        return "provisional_improvement: target issue absent (confirmation pending); no outstanding issues"
+    if resolved_target_issue is False:
+        return "no_improvement: previous target issue persists"
+
+    if current_issue:
+        return f"unclassified: no prior issue to compare; current issues: {current_issue}"
+    return "expected_improvement: no prior issue and no outstanding issues"
+
+
+def issues_match(
+    target_issue: Optional[str],
+    target_signature: Optional[str],
+    current_issue: Optional[str],
+    current_signature: Optional[str],
+    target_fingerprint: Optional[str] = None,
+    current_fingerprint: Optional[str] = None,
+) -> bool:
+    """
+    Decide whether the current iteration's issue is a recurrence of a target issue.
+
+    When both normalized signatures are known, they are the authoritative,
+    location-independent identity of the error (category + detail + construct),
+    so matching relies on signature equality: a different signature means a
+    genuinely different issue even within the same block (e.g. an arity error
+    then a delimiter error in the same predicate).
+
+    The normalized signature is deliberately coarse, so two DIFFERENT errors in
+    the same construct can share it (e.g. an illegal '>' on a Classification
+    value vs on a Time value in the same predicate). When both errors carry a
+    finer detail_fingerprint (offending operand type + nearby token) and those
+    fingerprints DIFFER, the current error is a different error at the same
+    family/site - NOT a recurrence. Missing fingerprints fall back to
+    signature-only (previous behavior).
+
+    Only when a signature is missing (semantic issues carry None) does it fall
+    back to issue-component overlap (same syntax block, or a shared unsat
+    predicate / counterexample name). Shared by LessonProbation and
+    update_resolution_statuses.
+    """
+    if target_signature and current_signature:
+        if target_signature != current_signature:
+            return False
+        if target_fingerprint and current_fingerprint and target_fingerprint != current_fingerprint:
+            return False
+        return True
+    if target_issue and current_issue:
+        t_block, t_construct, t_unsat, t_ce = _parse_issue_components(target_issue)
+        c_block, c_construct, c_unsat, c_ce = _parse_issue_components(current_issue)
+        if t_block and c_block and t_block == c_block:
+            return True
+        if t_unsat and (t_unsat & c_unsat):
+            return True
+        if t_ce and (t_ce & c_ce):
+            return True
+    return False
+
+
+def update_resolution_statuses(
+    entries: List['RegressionLogEntry'],
+    current_iteration: int,
+    required_clean_iterations: int = 3,
+    logger=None,
+) -> Dict[str, List[int]]:
+    """
+    Advance provisional resolutions ("temporarily_absent") toward confirmation
+    or reversion, so an oscillating error (A, B, A, B...) is never permanently
+    recorded as resolved.
+
+    An entry is marked resolution_status={'status': 'temporarily_absent', ...}
+    by the workflow when its target issue is first observed absent. This
+    function, called every iteration, re-examines each such entry against the
+    log itself (stateless, so it also works across resume):
+
+      - REVERTED: the target issue recurred in some iteration since - the
+        entry's status becomes 'resolution_reverted', resolved_target_issue is
+        flipped to False (so the fix re-enters failed-fix history instead of
+        being hidden by the resolved filter), and outcome_classification is
+        corrected to "no_improvement: ... recurred".
+      - CONFIRMED: the target issue stayed absent for required_clean_iterations
+        consecutive OBSERVABLE iterations (a syntax-broken iteration cannot
+        show whether a semantic issue is still present, so it neither advances
+        nor breaks confirmation of semantic targets) - status becomes
+        'resolved_confirmed' and a provisional outcome_classification is
+        upgraded to expected_improvement.
+
+    Returns:
+        {'confirmed': [iteration_ids], 'reverted': [iteration_ids]}
+    """
+    result: Dict[str, List[int]] = {'confirmed': [], 'reverted': []}
+    by_iter = {e.iteration_id: e for e in entries}
+
+    for entry in entries:
+        rs = entry.resolution_status
+        if not rs or rs.get('status') != 'temporarily_absent':
+            continue
+        if entry.iteration_id > current_iteration:
+            continue
+
+        target_issue = rs.get('target_issue') or ''
+        target_signature = rs.get('target_signature')
+        target_fingerprint = rs.get('target_fingerprint')
+        semantic_target = ('unsat predicate' in target_issue
+                           or 'counterexample' in target_issue)
+
+        recurred_at = None
+        clean_count = 0
+        for it in range(entry.iteration_id, current_iteration + 1):
+            later = by_iter.get(it)
+            if later is None:
+                continue
+            later_signature = (later.error_signature or {}).get('normalized_signature')
+            later_fingerprint = (later.error_signature or {}).get('detail_fingerprint')
+            if issues_match(target_issue, target_signature, later.issue, later_signature,
+                            target_fingerprint, later_fingerprint):
+                recurred_at = it
+                break
+            observable = (later.current_result is not None
+                          and later.current_result.syntax == "OK") or not semantic_target
+            if observable:
+                clean_count += 1
+
+        if recurred_at is not None:
+            rs['status'] = 'resolution_reverted'
+            rs['recurred_at'] = recurred_at
+            entry.resolved_target_issue = False
+            entry.outcome_classification = (
+                f"no_improvement: target issue recurred at iteration {recurred_at} "
+                f"(temporary absence, not a real fix)"
+            )
+            result['reverted'].append(entry.iteration_id)
+            if logger and hasattr(logger, "log"):
+                logger.log(
+                    f"🔁 Resolution REVERTED for iteration {entry.iteration_id}: "
+                    f"target issue '{target_issue[:80]}' recurred at iteration {recurred_at}"
+                )
+        elif clean_count >= required_clean_iterations:
+            rs['status'] = 'resolved_confirmed'
+            rs['confirmed_at'] = current_iteration
+            if entry.outcome_classification.startswith("provisional_improvement"):
+                entry.outcome_classification = (
+                    "expected_improvement" + entry.outcome_classification[len("provisional_improvement"):]
+                )
+            result['confirmed'].append(entry.iteration_id)
+            if logger and hasattr(logger, "log"):
+                logger.log(
+                    f"✅ Resolution CONFIRMED for iteration {entry.iteration_id}: "
+                    f"target issue '{target_issue[:80]}' stayed absent for "
+                    f"{clean_count} observable iterations"
+                )
+
+    return result
+
+
 def get_same_issue_failed_fixes(
     current_issue: str,
     regression_log_entries: List['RegressionLogEntry']
 ) -> List['RegressionLogEntry']:
     """
     Extract all failed fixes that targeted the same issue as current.
-    
+
     Matches by:
     - Same syntax error (same block name OR same construct type)
     - Same unsat predicate (same predicate name)
     - Same counterexample (same assertion name)
-    
+
     Args:
         current_issue: Current issue description
         regression_log_entries: List of all regression log entries
-        
+
     Returns:
         List of entries with resolved_target_issue=False targeting same issue
     """
     import re
-    
+
     failed_fixes = []
-    
+
     # Parse current issue to extract components
-    current_syntax_block = None
-    current_syntax_construct = None
-    current_unsat_preds = set()
-    current_counterexamples = set()
-    
-    # Extract from current issue - handle both formats:
-    # Old format: "syntax error in fact ExistingSystem"
-    # New format: "syntax error at line 4 (open statement)"
-    
-    # Try old format first
-    syntax_match = re.search(r'syntax error in (.+?)(?:;|$)', current_issue)
-    if syntax_match:
-        current_syntax_block = syntax_match.group(1).strip()
-    else:
-        # Try new format
-        syntax_match = re.search(r'syntax error at line \d+ \((.+?)\)', current_issue)
-        if syntax_match:
-            current_syntax_construct = syntax_match.group(1).strip()
-    
-    unsat_match = re.search(r'unsat predicate: (.+?)(?:;|$)', current_issue)
-    if unsat_match:
-        preds = unsat_match.group(1).split(',')
-        current_unsat_preds = set(p.strip() for p in preds)
-    
-    ce_match = re.search(r'counterexample: (.+?)(?:;|$)', current_issue)
-    if ce_match:
-        ces = ce_match.group(1).split(',')
-        current_counterexamples = set(c.strip() for c in ces)
-    
+    _debug_log(f"[FAILED_FIX_HISTORY] Searching for previous failures matching issue: '{current_issue}'")
+
+    (current_syntax_block, current_syntax_construct,
+     current_unsat_preds, current_counterexamples) = _parse_issue_components(current_issue)
+
+    _debug_log(f"[FAILED_FIX_HISTORY] Extracted components: block='{current_syntax_block}', construct='{current_syntax_construct}'")
+
     # Find entries with resolved_target_issue=False and matching issue
     for entry in regression_log_entries:
         if entry.resolved_target_issue is False and entry.issue:
             # Parse entry issue
-            entry_syntax_block = None
-            entry_syntax_construct = None
-            entry_unsat_preds = set()
-            entry_counterexamples = set()
-            
-            # Try old format first
-            syntax_match = re.search(r'syntax error in (.+?)(?:;|$)', entry.issue)
-            if syntax_match:
-                entry_syntax_block = syntax_match.group(1).strip()
-            else:
-                # Try new format
-                syntax_match = re.search(r'syntax error at line \d+ \((.+?)\)', entry.issue)
-                if syntax_match:
-                    entry_syntax_construct = syntax_match.group(1).strip()
-            
-            unsat_match = re.search(r'unsat predicate: (.+?)(?:;|$)', entry.issue)
-            if unsat_match:
-                preds = unsat_match.group(1).split(',')
-                entry_unsat_preds = set(p.strip() for p in preds)
-            
-            ce_match = re.search(r'counterexample: (.+?)(?:;|$)', entry.issue)
-            if ce_match:
-                ces = ce_match.group(1).split(',')
-                entry_counterexamples = set(c.strip() for c in ces)
+            (entry_syntax_block, entry_syntax_construct,
+             entry_unsat_preds, entry_counterexamples) = _parse_issue_components(entry.issue)
             
             # Check if any component matches
             match = False
-            
+            match_reason = ""
+
             # Syntax error matching:
             # - Old format: exact block name match
             # - New format: same construct type (e.g., both "open statement")
@@ -935,21 +1600,27 @@ def get_same_issue_failed_fixes(
             if current_syntax_block and entry_syntax_block:
                 if entry_syntax_block == current_syntax_block:
                     match = True
+                    match_reason = f"same syntax block '{current_syntax_block}'"
             elif current_syntax_construct and entry_syntax_construct:
                 if entry_syntax_construct == current_syntax_construct:
                     match = True
-            
+                    match_reason = f"same syntax construct '{current_syntax_construct}'"
+
             # Unsat predicates
             if current_unsat_preds and entry_unsat_preds & current_unsat_preds:
                 match = True
-            
+                match_reason = f"same unsat predicates"
+
             # Counterexamples
             if current_counterexamples and entry_counterexamples & current_counterexamples:
                 match = True
-            
+                match_reason = f"same counterexamples"
+
             if match:
+                _debug_log(f"[FAILED_FIX_HISTORY] Found match in iteration {entry.iteration_id}: {match_reason}")
                 failed_fixes.append(entry)
-    
+
+    _debug_log(f"[FAILED_FIX_HISTORY] Total previous failures found: {len(failed_fixes)}")
     return failed_fixes
 
 
@@ -995,37 +1666,71 @@ def check_issue_resolved(
     
     if prev_syntax_errors:
         if not curr_syntax_errors:
-            # Syntax error resolved!
-            _debug_log(f"  → Syntax errors cleared - RESOLVED")
-            pass  # Keep resolved_status = True
+            # Syntax error resolved DEFINITIVELY. Alloy could not compile the
+            # previous model, so no semantic data (unsat predicates /
+            # counterexamples) ever existed for it to leave a persisting issue
+            # behind. A model that now compiles cleanly proves the target
+            # syntax error is genuinely gone, so short-circuit here and return
+            # resolved: the unsat/counterexample checks below compare against
+            # previous semantic data that, for a syntax-error iteration, does
+            # not exist and must not be allowed to flip this to "not resolved".
+            _debug_log(f"  → Syntax errors cleared (model compiles) - RESOLVED (definitive)")
+            return True
         else:
-            # Still have syntax errors - compare line numbers and types
-            prev_error = prev_syntax_errors[0] if isinstance(prev_syntax_errors, list) else prev_syntax_errors
-            curr_error = curr_syntax_errors[0] if isinstance(curr_syntax_errors, list) else curr_syntax_errors
-            
-            if isinstance(prev_error, dict) and isinstance(curr_error, dict):
-                prev_line = prev_error.get('line', 0)
-                curr_line = curr_error.get('line', 0)
-                
-                # Check if same error based on line number
-                if prev_line == curr_line:
-                    # Same line - error not resolved
-                    _debug_log(f"  → Same line ({curr_line}) - NOT resolved")
-                    resolved_status = False
-                elif abs(curr_line - prev_line) <= 5:
-                    # Within ±5 lines - likely same error
-                    _debug_log(f"  → Within ±5 lines (prev={prev_line}, curr={curr_line}) - NOT resolved")
-                    resolved_status = False
-                elif curr_line < prev_line:
-                    # Error moved backward - not resolved
-                    _debug_log(f"  → Error moved backward (prev={prev_line}, curr={curr_line}) - NOT resolved")
-                    resolved_status = False
+            # A syntax error persists. The normalized signature (from
+            # ErrorNormalizer) is the authoritative, location-independent identity
+            # of the error (category + detail + construct): the same signature
+            # means the target error persists; a different signature means the
+            # target was resolved even if a new error surfaced in the same block.
+            prev_sig = (previous_entry.error_signature or {}).get('normalized_signature')
+            curr_sig = (current_entry.error_signature or {}).get('normalized_signature')
+            if prev_sig and curr_sig:
+                if prev_sig == curr_sig:
+                    # Same coarse signature. If both errors carry a finer
+                    # detail_fingerprint (operand type + nearby token) and they
+                    # DIFFER, this is a different error at the same family/site
+                    # (e.g. the target '>' on Classification was fixed and a new
+                    # '<' on Time surfaced in the same predicate) - so the target
+                    # WAS resolved. Only an identical fingerprint (or missing
+                    # fingerprints) means the target error genuinely persists.
+                    prev_fp = (previous_entry.error_signature or {}).get('detail_fingerprint')
+                    curr_fp = (current_entry.error_signature or {}).get('detail_fingerprint')
+                    if prev_fp and curr_fp and prev_fp != curr_fp:
+                        _debug_log(
+                            f"  → Same signature ({curr_sig}) but different detail "
+                            f"fingerprint (prev={prev_fp!r}, curr={curr_fp!r}) - RESOLVED "
+                            f"(different error at same family/site)"
+                        )
+                    else:
+                        _debug_log(f"  → Same normalized signature ({curr_sig}) and fingerprint - NOT resolved")
+                        resolved_status = False
                 else:
-                    _debug_log(f"  → Error moved forward significantly (prev={prev_line}, curr={curr_line}) - RESOLVED")
-    
+                    _debug_log(f"  → Different normalized signature (prev={prev_sig}, curr={curr_sig}) - RESOLVED")
+            else:
+                # No signature to compare - cannot prove the error changed; treat
+                # the syntax issue as still unresolved (conservative).
+                _debug_log("  → Missing normalized signature - NOT resolved (conservative)")
+                resolved_status = False
+
     # === Check Unsat Predicates ===
-    prev_unsat = set(previous_analysis.get('unsat_run_commands', []))
-    curr_unsat = set(current_analysis.get('unsat_run_commands', []))
+    prev_unsat_raw = previous_analysis.get('unsat_run_commands', [])
+    curr_unsat_raw = current_analysis.get('unsat_run_commands', [])
+    
+    # Extract predicate names from previous unsat predicates
+    prev_unsat = set()
+    for pred in prev_unsat_raw:
+        if isinstance(pred, dict):
+            prev_unsat.add(pred.get('name', ''))
+        else:
+            prev_unsat.add(str(pred))
+    
+    # Extract predicate names from current unsat predicates
+    curr_unsat = set()
+    for pred in curr_unsat_raw:
+        if isinstance(pred, dict):
+            curr_unsat.add(pred.get('name', ''))
+        else:
+            curr_unsat.add(str(pred))
     
     if prev_unsat:
         # Check if previous unsat predicates are still unsat
@@ -1047,13 +1752,13 @@ def check_issue_resolved(
         prev_ce_names = set()
         for ce in prev_counterexamples:
             if isinstance(ce, dict):
-                prev_ce_names.add(ce.get('command', ''))
+                prev_ce_names.add(ce.get('command_name', ''))  # Fixed: use 'command_name' not 'command'
 
         # Extract command names from current counterexamples
         curr_ce_names = set()
         for ce in curr_counterexamples:
             if isinstance(ce, dict):
-                curr_ce_names.add(ce.get('command', ''))
+                curr_ce_names.add(ce.get('command_name', ''))  # Fixed: use 'command_name' not 'command'
 
         # Check if any previous counterexample (same assertion) still has counterexample
         still_failing = prev_ce_names & curr_ce_names
@@ -1170,7 +1875,7 @@ def is_feedback_too_similar(
         print(f"Warning: Failed to check feedback similarity: {e}")
         return (False, None, None)
 
-
+# unused helper function. *TO-REMOVE 
 def extract_repair_instructions(feedback: str) -> str:
     """
     Extract the [REPAIR INSTRUCTIONS] section from syntax repair feedback.
@@ -1195,6 +1900,59 @@ def extract_repair_instructions(feedback: str) -> str:
 
     # Fallback: return full feedback if section not found
     return feedback
+
+
+def extract_fix_intent(feedback: str) -> str:
+    """
+    Extract the [FIX INTENT] section from syntax repair feedback.
+
+    Args:
+        feedback: Full feedback text from GenerateSyntaxRepairInstruction
+
+    Returns:
+        Text content of the FIX INTENT section, or empty string if section not found
+    """
+    import re
+
+    # Try to find the FIX INTENT section
+    # Pattern: [FIX INTENT]: followed by content (same line or next line)
+    # until the next section header or end of text
+    pattern = r'\[FIX INTENT\]:?\s*(.*?)(?:\n\[(?:REPAIR INSTRUCTIONS|RATIONALE|LESSON|DIAGNOSIS)\]:|$)'
+
+    match = re.search(pattern, feedback, re.DOTALL | re.IGNORECASE)
+
+    if match:
+        return match.group(1).strip()
+
+    # Section not found - return empty string (combined separately with
+    # extract_repair_instructions, which already has a full-feedback fallback)
+    return ""
+
+
+def extract_fix_intent_and_repair_instructions(feedback: str) -> str:
+    """
+    Extract and combine the [FIX INTENT] and [REPAIR INSTRUCTIONS] sections
+    from syntax repair feedback, for use in similarity comparisons.
+
+    Combining both captures the high-level intent of the fix as well as the
+    concrete steps, so two attempts with the same intent but differently
+    worded steps (or vice versa) are still recognized as similar.
+
+    Args:
+        feedback: Full feedback text from GenerateSyntaxRepairInstruction
+
+    Returns:
+        Combined text of FIX INTENT + REPAIR INSTRUCTIONS, or full feedback
+        if neither section is found
+    """
+    fix_intent = extract_fix_intent(feedback)
+    repair_instructions = extract_repair_instructions(feedback)
+
+    if not fix_intent and repair_instructions == feedback:
+        # Neither section was found - fall back to full feedback
+        return feedback
+
+    return f"{fix_intent}\n{repair_instructions}".strip()
 
 
 def save_rejected_feedback(

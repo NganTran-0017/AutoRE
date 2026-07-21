@@ -1,0 +1,54 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples (assertR3)
+- Predicates: Satisfiable
+- Instances: Meaningful, but edge-case for R3.2 not substantively tested
+- Vacuity: Possible (assertR3 may pass vacuously if r1 = r2)
+- Overall: Incomplete
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+- Strengthen assertR3 and notMutualExclusionDuringEmergency predicate by ensuring only distinct roles are considered: add r1 != r2 to all relevant quantifications.
+  - Update assertR3:
+    Replace:
+      all r1, r2: Role | (r1 in rolesHeld[u, s] and r2 in rolesHeld[u, s])
+    With:
+      all r1, r2: Role | r1 != r2 && r1 in rolesHeld[u, s] && r2 in rolesHeld[u, s]
+- In assertR3, optionally restrict attention to pairs of roles that are mutually exclusive in Normal mode to directly evaluate suspension.
+- Add a run/search that explicitly finds an instance where, in Emergency mode, a user holds two mutually exclusive roles.
+
+=== ASSUMPTIONS REVIEW ===
+- Confirm: Mutual exclusivity of roles is suspended for all users in Emergency mode.
+- Confirm: Set semantics on emAdmins prevents duplicates.
+- Keep: Emergency mode must eventually transition back to Normal.
+- Reduce: Assertions should not test vacuous cases (r1 = r2).
+
+=== STRONGER CHECKS ===
+- Add an assertion or run to find a state in Emergency mode where a user holds two mutually exclusive roles (from Normal mode):
+    assert existsUserWithMutuallyExclusiveRolesInEmergency {
+      some s: State | s.mode = Emergency and
+        some u: User, r1, r2: Role |
+          r1 != r2 and r1 in rolesHeld[u, s] and r2 in rolesHeld[u, s] and r1 in r2.mutuallyExclusiveWith
+    }
+- Add an assertion that, in Normal mode, no user ever holds two mutually exclusive roles.
+- Add vacuity checks to ensure at least two mutually exclusive roles can be held by the same user in Emergency mode (to avoid trivial pass).
+
+=== REQUIREMENT_UPDATES ===
+- Revise R3.2 to state explicitly that, during Emergency mode, mutual exclusion is suspended for all users, and that it must be possible for a user to simultaneously hold roles that are mutually exclusive in Normal mode.
+- Clarify whether all combinations of mutually exclusive roles must be possible in Emergency, or if only suspension (not enforcement) is required.
+- Ensure R3.2 reflects that this suspension should be observable (must be possible, not just permitted).
+
+=== USER QUESTIONS ===
+1. During Emergency mode, must at least one user be able to simultaneously hold two roles that are mutually exclusive in Normal mode, or is it sufficient that mutual exclusion is not enforced (regardless of whether this occurs)?
+2. Are there any restrictions on which mutually exclusive roles may be held together in Emergency mode, or is every pair permitted for any user eligible by clearance/delegation?
+3. Should the model require at least one scenario where a user does hold two mutually exclusive roles in Emergency mode for verification, or is absence of prohibition sufficient?
+
+=== HANDOFF TO RE ===
+1. Update R3.2 to clarify whether it is required or merely permitted for users to hold mutually exclusive roles in Emergency mode, and whether this must be realizable in the model.
+2. Strengthen the assertion for mutual exclusion suspension to only consider distinct role pairs and, if desired, only pairs that are mutually exclusive in Normal mode.
+3. Add explicit instance search/assertion to verify that, during Emergency, at least one user can hold two mutually exclusive roles.
+4. Answer the above user questions to resolve ambiguity in R3.2 and finalize model refinement.
+5. Review and update R3.2 and related requirements to make the allowed/required edge cases explicit and unambiguous.
+```
+

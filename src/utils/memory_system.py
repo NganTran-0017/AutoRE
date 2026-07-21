@@ -202,6 +202,31 @@ class LongTermMemorySystem:
         )
         return [item.content for item in items]
 
+    def get_conventions(
+        self,
+        agent: Optional[str] = None,
+        action: Optional[str] = None,
+        limit: int = 50
+    ) -> List[str]:
+        """
+        Convenience method to get modeling-convention content.
+
+        Args:
+            agent: Filter by agent
+            action: Filter by action
+            limit: Maximum number
+
+        Returns:
+            List of convention strings
+        """
+        items = self.retrieve(
+            agent=agent,
+            action=action,
+            item_type="convention",
+            limit=limit
+        )
+        return [item.content for item in items]
+
     def get_events(
         self,
         agent: Optional[str] = None,

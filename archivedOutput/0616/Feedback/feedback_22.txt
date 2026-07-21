@@ -1,0 +1,97 @@
+=== FEEDBACK ===
+## 1. Next Action: adjust scope/trace and rerun
+
+**Rationale:**  
+Both the unsatisfiable EmergencyBypassFIFOScenario and the persistent counterexample for assertMutexAllowedDuringEmergency have not changed despite multiple (4) prior fix attempts—each time focusing on predicate/fact logic or syntax, not on bounds or instance richness. The regression log and result interpretation strongly suggest that the current scope (notably: 3 Request, 5 State) may be insufficient to witness the intended Emergency FIFO bypass scenario or mutex relaxation. All other assertions and predicates pass, indicating no fundamental model inconsistency or new regression.
+
+---
+
+## 2. Model Improvement Guidance
+
+### a) EmergencyBypassFIFOScenario (unsat)
+- **Increase scope:**  
+  Increase the scope for Request, State, and possibly User to at least 4–5. Many FIFO-related scenarios require at least 4 requests to demonstrate a nontrivial bypass (e.g., two high-classification and two lower-classification requests, with interleaved processing).
+  - Example:  
+    Change all relevant `run`/`check` scopes to at least:  
+    ```
+    for 6 State, 4 User, 2 Administrator, 4 Role, 5 Request, 5 Delegation, 5 Object, 1 EmergencyPrivilege, 3 Clearance
+    ```
+- **Relax overly strict scenario predicates:**  
+  If after increasing scope, EmergencyBypassFIFOScenario is still unsat, relax unnecessary conjunctions. For example, ensure you do not require both r1 and r2 to be pending in s and only r1 to be processed in s2—allow that r2 may remain pending or have changed status.
+- **Double-check predicate logic:**  
+  Ensure EmergencyBypassFIFOScenario matches the intended requirement: that a high-classification request is processed ahead of a lower-classification one during Emergency, regardless of original request order.
+
+### b) assertMutexAllowedDuringEmergency (counterexample persists)
+- **Broaden user/role combinations or relax constraints:**  
+  The current assertion expects some state in Emergency mode where a user holds two mutually exclusive roles. If the scope of User or Role is too small (e.g., only three roles, limited users), or mutexWith relations are not sufficiently populated, this may block the scenario.  
+    - Increase Role and User scope to at least 4–5 each.
+    - Consider adding a fact to guarantee that at least one user can be assigned two mutually exclusive roles in Emergency mode, or ensure mutexWith is always populated for at least one role pair.
+- **Guard Normal mode mutex fact strictly:**  
+  Double-check that `DelegationMutex` fact is only enforced in Normal mode, not Emergency, to avoid accidental overconstraint.
+
+### c) General:  
+- **Check instance richness after rerun:**  
+  After increasing scope and rerunning, inspect instances for coverage—are Emergency scenarios with multiple request priorities and mutex role holdings present?
+
+---
+
+## 3. Assumption Review
+
+No new assumption-level risks are indicated by the results.  
+No changes needed at this stage.
+
+---
+
+## 4. Requirement Update Recommendations
+
+No requirement ambiguities or contradictions detected.  
+**Do not update the requirements document.**  
+If after increased scope the EmergencyBypassFIFOScenario or mutex relaxation are still unsat, revisit whether requirement phrasing is too strict, but do not update until confirmed.
+
+---
+
+## 5. Q&A Reuse and Update
+
+No prior Q&A to reuse.  
+No new unresolved interpretation questions to raise.
+
+---
+
+## 6. Stronger Verification Checks
+
+**Do not add stronger checks now.**  
+Focus on achieving satisfying instances and eliminating counterexamples for the current predicates and assertions. Only after hard metrics pass should you add edge or vacuity checks.
+
+---
+
+## 7. Handoff Priorities
+
+**Critical Blocker:**  
+1. Increase Request, State, User, and Role scope to enable rich Emergency scenarios and rerun all relevant runs/checks.  
+   - Focus on EmergencyBypassFIFOScenario and assertMutexAllowedDuringEmergency.
+
+**Important Follow-up:**  
+2. If EmergencyBypassFIFOScenario remains unsat or mutex assertion fails after scope increase, relax scenario predicates (remove unnecessary constraints) and ensure facts do not overconstrain Emergency mode.
+
+**Optional Enhancement:**  
+3. After successful runs, add edge-case predicates or assertions to confirm that FIFO is truly bypassed in Emergency and that mutex relaxation is effective only in Emergency mode.
+
+---
+
+## Summary Table
+
+| Issue/Goal                                   | Action                                                | Priority     |
+|----------------------------------------------|-------------------------------------------------------|--------------|
+| EmergencyBypassFIFOScenario unsat            | Increase Request, State, User, Role scope and rerun   | Critical     |
+| assertMutexAllowedDuringEmergency fails      | Same as above; relax constraints if still failing     | Critical     |
+| Predicate/fact logic too strict              | Relax scenario predicates if no improvement           | Important    |
+| Vacuity/edge checks                         | Add only after hard metrics pass                      | Optional     |
+
+---
+
+**In summary:**  
+Do not attempt further predicate/fact logic tweaks until you have increased the model scope. Prior fix attempts did not address instance space limitations. If increasing scope does not resolve the issue, only then revisit scenario predicates and requirement phrasing.
+
+=== FINAL CONVERGENCE ===
+False
+

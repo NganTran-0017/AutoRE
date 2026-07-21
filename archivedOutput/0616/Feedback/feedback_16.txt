@@ -1,0 +1,167 @@
+=== FEEDBACK ===
+## 1. Primary Next Action:  
+**refine/narrow fix**
+
+The current model passes all assertions with no counterexamples or syntax errors, but the generated instances are shallow and do not robustly exercise or guarantee some critical behaviors (e.g., Emergency-mode mutex relaxation, request processing policies, delegation/revocation edge cases). Several requirements are only weakly witnessed, and key liveness and possibility checks are missing or not enforced.
+
+---
+
+## 2. Model Improvement Guidance
+
+### a) Add/Strengthen Constraints and Assertions
+
+**i. Liveness of Request Processing Post-Emergency**
+- **Gap:** The model allows requests (especially non-high-classification ones) to remain unprocessed indefinitely after Emergency mode.
+- **Action:** Add a liveness assertion ensuring all pending requests are eventually processed after Emergency mode ends.
+- **Code Snippet:**
+    ```alloy
+    assert AllRequestsEventuallyProcessed {
+      all r: Request | some s: State | s.mode = Normal and s.reqStatus[r] = Processed
+    }
+    check AllRequestsEventuallyProcessed
+    ```
+
+**ii. Emergency Mode Mutex Relaxation Possibility**
+- **Gap:** No instance demonstrates a user holding two mutually exclusive roles simultaneously in Emergency mode.
+- **Action:** Add a positive assertion to ensure the model allows this, not just that it is not forbidden.
+- **Code Snippet:**
+    ```alloy
+    assert MutexAllowedDuringEmergency {
+      some s: State |
+        s.mode = Emergency and
+        some u: User, r1, r2: Role |
+          r2 in r1.mutexWith and r1 in s.userRoles[u] and r2 in s.userRoles[u]
+    }
+    check MutexAllowedDuringEmergency
+    ```
+
+**iii. Emergency Activation by Exactly Two Administrators**
+- **Gap:** The EmergencyActivation fact only requires "some a1, a2: Administrator | a1 != a2" but does not enforce "exactly" two admins nor exclude more.
+- **Action:** Strengthen this by adding an assertion that Emergency mode is entered by exactly two administrators and no more.
+- **Code Snippet:**
+    ```alloy
+    assert EmergencyActivationExactlyTwoAdmins {
+      all s, s2: State |
+        s.mode = Normal and s2.mode = Emergency and Next[s, s2] =>
+          one a1, a2: Administrator | a1 != a2
+    }
+    check EmergencyActivationExactlyTwoAdmins
+    ```
+
+**iv. Admin Credential Update Liveness**
+- **Gap:** No assertion enforces that all administrators update credentials exactly once after Emergency exit.
+- **Action:** Add an assertion for this property.
+- **Code Snippet:**
+    ```alloy
+    assert AdminsMustUpdateCredentialsOnce {
+      all a: Administrator |
+        some s, s2: State |
+          s.mode = Emergency and s2.mode = Normal and Next[s, s2] =>
+            s2.adminCredUpdated[a] = True and
+            all s3: State | s3 != s2 and s3.adminCredUpdated[a] = True implies s3.mode = Normal
+    }
+    check AdminsMustUpdateCredentialsOnce
+    ```
+
+**v. Delegation and Revocation Edge Cases**
+- **Gap:** No instance demonstrates Emergency-mode delegations and their revocation at Emergency exit, or the persistence of pre-Emergency delegations.
+- **Action:** Add targeted run predicates/scenarios to force such situations, or use stronger scope bounds to ensure these cases are instantiated.
+
+**vi. Request Processing in Emergency (Bypass and Priority)**
+- **Gap:** No instance demonstrates out-of-FIFO processing during Emergency.
+- **Action:** Add a scenario/run command where multiple pending requests exist with at least one high-classification request and at least one lower-classification request, and show the high-classification one being processed first, regardless of FIFO order.
+
+### b) Scope Refinement
+
+- Increase the scope for State, User, Role, Request, and Delegation to ensure the instances are complex enough to exercise all edge cases (e.g., at least 3 users, 3 roles with at least one mutex pair, 3 requests with varying classifications, 2+ delegations).
+- If the model generates degenerate or trivial instances, explicitly set scopes in the run/check commands.
+
+---
+
+## 3. Assumptions to Review
+
+### a) EmergencyActivation Fact
+- **Status:** reduce  
+- **Reason:** The current fact is underconstrained ("some a1, a2: Administrator | a1 != a2") and may allow more than two admins to be involved in activation. This assumption is too weak for the requirement "exactly two administrators."
+- **Action:** Replace the fact or supplement with a stronger assertion as above.
+
+### b) RoleAssignmentClearance & DelegationClearance as Facts
+- **Status:** confirm  
+- **Reason:** Consider verifying these as assertions, not just facts, to ensure they are not silently overconstraining the model or hiding errors.
+
+### c) Emergency Privilege Granting Provenance
+- **Status:** temporary  
+- **Reason:** The model currently does not track which administrators grant/revoke emergency privileges. If auditability or provenance is a requirement, model the granting process explicitly.
+
+---
+
+## 4. Requirement Updates
+
+**No requirement text updates are needed at this stage.**  
+However, if persistent ambiguity about Emergency activation provenance or admin credential update triggers arises, consider updating the requirements to clarify:
+
+- "Exactly two and only two administrators must jointly activate Emergency mode."
+- "Administrators must update credentials no more than once for each Emergency period."
+
+Current issues can be tracked in the model/assumptions until such clarification is required.
+
+---
+
+## 5. Q&A Reuse and Update
+
+**No prior Q&A to reuse.**  
+Unresolved Questions to be raised (if not clear to RE):
+- Should the model track which specific admins activated Emergency mode for provenance?
+- Is there a liveness requirement that no request remains unprocessed indefinitely after Emergency exit?
+- Should credential updates for admins be modeled as explicit events/actions rather than just a Boolean flag?
+
+---
+
+## 6. Stronger Verification Checks
+
+- Add the liveness assertion for eventual request processing after Emergency.
+- Add positive possibility checks for mutex violation in Emergency and for Emergency-mode delegations/revocations.
+- Ensure at least one scenario demonstrates out-of-FIFO request processing in Emergency mode.
+- For each assertion added, run with increased scope to ensure edge cases are explored.
+
+---
+
+## 7. Handoff Priorities for RE
+
+**Critical Blockers (fix now):**
+1. Add liveness assertion ensuring all requests are eventually processed after Emergency.
+2. Strengthen EmergencyActivation to enforce exactly two administrators.
+3. Add positive assertion (and scenario/run) demonstrating mutex roles held by a user during Emergency.
+
+**Important Follow-up:**
+4. Add targeted scenarios forcing Emergency-mode delegations and their revocation at exit, and persistence of pre-Emergency delegations.
+5. Add assertion ensuring admins update credentials exactly once after Emergency exit.
+
+**Optional Enhancements/Future:**
+6. Model provenance of Emergency privilege granting/revocation if required for audit/auditability.
+7. Convert RoleAssignmentClearance and DelegationClearance into assertions for explicit verification.
+8. Increase scope to ensure all edge cases and requirement interactions are exercised.
+
+---
+
+## Summary Table
+
+| Priority | Action                                                                                   |
+|----------|------------------------------------------------------------------------------------------|
+| BLOCKER  | Add liveness assertion: all requests processed after Emergency                           |
+| BLOCKER  | Strengthen EmergencyActivation: exactly two admins required                              |
+| BLOCKER  | Assert/force: mutex role pair held by a user in Emergency                               |
+| IMPORTANT| Force scenarios: Emergency delegations/revocation, pre-Emergency delegation persistence  |
+| IMPORTANT| Assert: admin credential update exactly once after Emergency                             |
+| OPTIONAL | Model privilege-granting provenance                                                      |
+| OPTIONAL | Convert clearance facts to assertions                                                    |
+| OPTIONAL | Expand scope for richer instance generation                                              |
+
+---
+
+**Next steps for RE:**  
+Implement the critical blockers above, then rerun the model with increased scope and the new assertions. Confirm that generated instances now exercise all requirement interactions, including liveness, possibility, and revocation edge cases. Only proceed to requirement updates if further ambiguity is revealed.
+
+=== FINAL CONVERGENCE ===
+False
+

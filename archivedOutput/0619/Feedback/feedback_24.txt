@@ -1,0 +1,77 @@
+=== FEEDBACK ===
+```
+=== NEXT ACTION DECISION ===
+Decision: refine/narrow fix
+Rationale: The latest changes have not resolved the open issues: mutex role relaxation in Emergency mode is still too restrictive, and liveness for request processing is not enforced. Prior attempts have repeated similar strategies; alternative targeted corrections are now needed.
+
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Baseline: Satisfiable
+- Combined Model: Satisfiable
+- Assertions: Counterexamples (assertMutexAllowedDuringEmergency, assertAllRequestsEventuallyProcessed)
+- Instances: Meaningful for passing cases; failing assertions highlight missing/incorrect behaviors
+- Vacuity: None
+
+=== REPAIR INSTRUCTIONS ===
+1. DelegationMutex Fact (Emergency Mutex Relaxation):
+   - Refine the fact to explicitly permit a user to hold a mutex pair of roles in Emergency mode only if at least one role is held via delegation (direct assignment of both remains forbidden at all times).
+   - Update the DelegationMutex fact as follows:
+     ```
+     fact DelegationMutex {
+         // In all modes, direct assignment of mutex roles is forbidden
+         all s: State | all u: User | all r1, r2: Role |
+             r2 in r1.mutexWith => not (r1 in directRoles[s, u] and r2 in directRoles[s, u])
+         // In Normal mode, mutex roles forbidden (both direct and delegated)
+         all s: State | s.mode = Normal =>
+             all u: User | all r1, r2: Role |
+                 r2 in r1.mutexWith => not (r1 in s.userRoles[u] and r2 in s.userRoles[u])
+         // In Emergency mode, mutex roles allowed only if at least one held via delegation
+         all s: State | s.mode = Emergency =>
+             all u: User | all r1, r2: Role |
+                 r2 in r1.mutexWith =>
+                     not (r1 in s.userRoles[u] and r2 in s.userRoles[u])
+                     or (some d: Delegation | d.to = u and d in s.activeDelegations and (d.role = r1 or d.role = r2))
+     }
+     ```
+   - Rationale: This ensures that in Emergency, mutex roles can be held together only if delegation is involved, matching requirements.
+
+2. Liveness Constraint for Request Processing (All Requests Eventually Processed):
+   - Add a liveness fact to guarantee that every request is eventually processed in some Normal mode state.
+   - Example addition:
+     ```
+     fact AllRequestsEventuallyProcessed {
+         all r: Request | some s: State | s.mode = Normal and s.reqStatus[r] = Processed
+     }
+     ```
+   - Alternatively, if temporal patterns are needed, ensure that the system cannot reach a dead-end where requests remain perpetually pending.
+
+3. Regression Guard:
+   - Ensure that existing passing assertions (assertRoleAssignmentClearance, assertDelegationClearance, etc.) remain stable after implementing the above fixes.
+
+=== ASSUMPTIONS REVIEW ===
+None - assumptions appear sound
+
+=== REQUIREMENT UPDATES ===
+None - requirements are clear
+
+=== UPDATED USER QUESTIONS ===
+None
+
+=== Q&A STATUS UPDATE ===
+None - no status changes
+
+=== HANDOFF TO RE ===
+Priority 1 (Critical blockers): 
+- Refine DelegationMutex fact to allow mutex pairs via delegation in Emergency, as per the requirements.
+- Add explicit liveness constraint ensuring all requests are eventually processed after Emergency ends.
+
+Priority 2 (Important improvements): 
+- Confirm that regression does not occur on passing assertions.
+
+Priority 3 (Optional enhancements): 
+- After fixes, consider adding negative/vacuity checks to confirm that mutex relaxation and liveness are not over-permissive.
+```
+
+=== FINAL CONVERGENCE ===
+False
+

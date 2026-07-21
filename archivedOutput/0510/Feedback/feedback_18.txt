@@ -1,0 +1,49 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples
+- Predicates: Satisfiable
+- Instances: Meaningful (for most predicates); Suspicious/vacuous for mutual exclusion suspension
+- Vacuity: Possible (counterexamples and suspiciously vacuous results for mutual exclusion scenarios)
+- Overall: Incomplete
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+1. Globally enforce the existence of at least one pair of mutually exclusive roles for all runs and checks by adding a global fact tying mutuallyExclusiveWith to require some r1, r2: Role | r1 != r2 and r1 in r2.mutuallyExclusiveWith.
+2. Strengthen enforcement of mutual exclusion suspension so that it is only possible in Emergency mode when there are exactly two emAdmins. Update existing facts or add new facts accordingly.
+3. Review the positive scenario for mutual exclusion suspension: ensure the model exercises a user being delegated two mutually exclusive roles in Emergency mode with exactly two emAdmins, not vacuously.
+4. Explicitly populate mutuallyExclusiveWith in the test scope or via a fact, to ensure vacuity is eliminated in all runs and checks.
+
+=== ASSUMPTIONS REVIEW ===
+- Confirm: No role is mutually exclusive with itself (already ensured by a fact).
+- Reduce: Model previously allowed mutuallyExclusiveWith to be empty, enabling vacuity. This is now globally disallowed for all runs/checks.
+- Confirm: Exactly two emAdmins are required for Emergency mode entry and for mutual exclusion suspension.
+- Confirm: For all runs/checks, at least one mutuallyExclusiveWith relation must exist in the model's scope.
+
+=== STRONGER CHECKS ===
+1. Add a global fact guaranteeing the existence of at least one pair of mutually exclusive roles for all runs and checks:
+   ```
+   fact AtLeastOneMutExPair {
+     some r1, r2: Role | r1 != r2 and r1 in r2.mutuallyExclusiveWith
+   }
+   ```
+2. Add negative check: In Emergency mode with fewer or more than two emAdmins, no user can hold two mutually exclusive roles (no suspension in those cases).
+3. Add negative check: In Emergency mode, if mutuallyExclusiveWith is empty (should not be possible now), ensure this is detected and flagged.
+4. For each mutual exclusion assertion or scenario, check non-vacuity by including a precondition that mutually exclusive roles exist in the instance (now enforced globally).
+
+=== REQUIREMENT_UPDATES ===
+1. Update R3.2 to require, for all runs/checks, the existence of at least one pair of mutually exclusive roles in the verification scope. This eliminates vacuity and ensures requirements are tested non-trivially.
+2. Clarify in requirements that mutual exclusion suspension is only possible in Emergency mode with exactly two emAdmins; all other configurations must be explicitly disallowed and checked.
+3. Add to requirements: "All mutual exclusion-related scenarios (positive and negative) must be constructed such that at least one mutually exclusive role pair exists, enforced globally, to avoid vacuity."
+
+=== USER QUESTIONS ===
+1. Confirm: With the new approach, mutually exclusive roles must always exist in the model for all runs/checks, not just scenario-specific tests. Is this global enforcement acceptable for your modeling and requirement needs?
+
+=== HANDOFF TO RE ===
+1. Add a global fact enforcing at least one mutually exclusive role pair exists in all runs and checks.
+2. Update the model to ensure mutual exclusion suspension is only allowed in Emergency mode with exactly two emAdmins.
+3. Update requirements to explicitly mandate non-vacuity in all mutual exclusion suspension testing.
+4. Confirm with stakeholders that global enforcement of mutual exclusion (for all runs/checks) is correct and intended.
+5. Re-run all mutual exclusion scenario runs/checks after model updates to confirm proper assertion pass/fail and eliminate vacuity.
+```
+

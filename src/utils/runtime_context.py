@@ -94,6 +94,15 @@ class SharedRuntimeContext:
         regression_path = Path(f"memory/{project_name}/regression_log.json")
         self.regression_log = RegressionLog(log_path=regression_path)
 
+        # Structured audit log of requirements-document patch operations
+        from .requirement_patch_log import RequirementPatchLog
+        patch_log_path = Path(f"memory/{project_name}/requirement_patch_log.json")
+        self.requirement_patch_log = RequirementPatchLog(log_path=patch_log_path)
+
+        # Staged lessons awaiting confirmation that the issue they targeted was resolved
+        self.pending_evaluator_feedback_lesson = None  # GenerateSyntaxRepairInstruction / RefineSyntaxRepairInstruction / GenerateSemanticFeedback
+        self.pending_re_fix_lesson = None  # UpdateAlloyModel
+
     def next_iteration(self):
         """Move to next iteration."""
         self.iteration.increment()

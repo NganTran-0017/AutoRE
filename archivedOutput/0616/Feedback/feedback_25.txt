@@ -1,0 +1,118 @@
+=== FEEDBACK ===
+## 1. Next Action
+
+Primary Next Action: **refine/narrow fix**
+
+- Rationale: The persistent failures (EmergencyBypassFIFOScenario UNSAT, assertMutexAllowedDuringEmergency counterexample) indicate that previous broad relaxations and scope increases have not resolved the core semantic misalignment. Multiple past attempts (7) have not worked, so a targeted refinement of the relevant modeling logic is required instead of further broad changes or scope increases.
+
+---
+
+## 2. Model Improvement Guidance
+
+### For EmergencyBypassFIFOScenario (Predicate remains UNSAT):
+
+- **Suspected Issue:** The EmergencyProcessingPriority fact may be too restrictive, not allowing a scenario where a high-classification request is processed while a non-high remains pending (the core of EmergencyBypassFIFOScenario).
+- **Action:** Explicitly allow the model to process a high-classification request even if non-high requests remain pending in Emergency mode, and ensure that multiple requests can be processed in one transition if this is intended.
+    - **Targeted Code Change (EmergencyProcessingPriority fact):**
+        - Replace all universal quantification over Request with quantification only over the processed requests in the transition.
+        - Example refinement (replace the inner all r: Request ... with quantification over just processed requests):
+
+```alloy
+fact EmergencyProcessingPriority {
+  all s, s2: State |
+    s.mode = Emergency and s2.mode = Emergency and Next[s, s2] =>
+      let pending = {r: Request | s.reqStatus[r] = Pending} |
+      let processed = {r: Request | s.reqStatus[r] = Pending and s2.reqStatus[r] = Processed} |
+      let high = {r: Request | r in pending and requestClassification[r] = High} |
+      let med = {r: Request | r in pending and requestClassification[r] = Medium} |
+      let low = {r: Request | r in pending and requestClassification[r] = Low} |
+        (
+          // If any high pending, only high are processed
+          (some high => all r: processed | r in high)
+          and
+          // If no high, but some med, only med are processed
+          (no high and some med => all r: processed | r in med)
+          and
+          // If only low remain, only low are processed
+          (no high and no med and some low => all r: processed | r in low)
+        )
+}
+```
+- **Justification:** This change focuses the constraint only on requests that transition from pending to processed, making it possible for high-classification requests to be processed while lower-classification requests remain pending, matching the scenario predicate.
+
+---
+
+### For assertMutexAllowedDuringEmergency (Assertion still fails):
+
+- **Suspected Issue:** The DelegationMutex fact may still be overconstraining, or the role assignment logic does not permit users to hold mutually exclusive roles in Emergency mode.
+- **Action:** Review and, if necessary, further relax the DelegationMutex fact to ensure that mutex restrictions apply **only** in Normal mode, and are fully lifted (not just partially) in Emergency mode.
+    - **Targeted Code Check/Refinement:**
+
+```alloy
+fact DelegationMutex {
+  // Restrict only in Normal mode
+  all s: State |
+    s.mode = Normal =>
+      all u: User |
+        all r1, r2: Role |
+          r2 in r1.mutexWith =>
+            not (r1 in s.userRoles[u] and r2 in s.userRoles[u])
+  // (No mutex constraint at all in Emergency mode)
+}
+```
+- Confirm that **no other facts** (including in userRoles updates, role assignment, or delegation logic) re-impose mutex restrictions during Emergency mode.
+
+---
+
+### Additional Guidance
+
+- **Do not further increase scope**; previous increases were ineffective.
+- **Do not attempt further broad relaxations**; focus on the logic of state transitions and role assignment in Emergency mode.
+- **After making the above changes, rerun only the failing run and check commands** to validate the fix before full regression.
+
+---
+
+## 3. Assumptions to Review
+
+- **No new assumptions require review at this time.**
+
+---
+
+## 4. Requirement Updates
+
+- **No requirement updates are needed.** The English requirements are consistent with the intended model behavior.
+
+---
+
+## 5. Q&A Reuse and Update
+
+- **No Q&A reuse or updates required.** No unresolved or prior Q&A found.
+
+---
+
+## 6. Stronger Verification Checks
+
+- **Not recommended at this stage.** Focus on resolving current failures; do not add new checks until the model produces the required instances and all assertions pass.
+
+---
+
+## 7. Handoff Items for RE (Prioritized)
+
+**Critical Blocker (Fix NOW):**
+1. Refine the EmergencyProcessingPriority fact to quantify only over processed requests in Emergency mode transitions (see code suggestion above).
+2. Confirm and if needed, further relax DelegationMutex so mutex constraints are fully disabled during Emergency mode.
+
+**Important Follow-up:**
+3. Confirm no other facts or predicates (role assignment, delegation, userRoles update logic) are re-imposing mutex-with restrictions during Emergency mode.
+
+**Optional/Future:**
+4. Once the above are fixed and all checks pass, consider adding edge-case checks for Emergency mode role and request processing behaviors to guard against vacuity.
+
+---
+
+**Summary:**  
+Do not repeat scope increases or broad relaxations. Precisely target the processing logic for Emergency mode and mutex role handling as above. This approach directly addresses the root cause, avoids prior failed patterns, and should unblock both the unsat scenario and the assertion failure.
+
+=== FINAL CONVERGENCE ===
+False
+

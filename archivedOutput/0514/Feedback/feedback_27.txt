@@ -1,0 +1,89 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples
+- Predicates: Satisfiable
+- Instances: Meaningful (local consistency, but risk of degenerate/vacuous instances)
+- Vacuity: None
+- Overall: Incomplete
+
+=== CONVERGENCE_RECOMMENDATION ===
+Status: FALSE
+Reasoning: User reviewed the feedback and requested additional fixes and clarifications—specifically, stricter enforcement for mutual exclusion (including delegated roles), mandatory Emergency mode in all verification scenarios, and precise delegation expiry. Hard metrics still show counterexamples, and the model remains underconstrained in some areas.
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+1. Enforce Mutual Exclusion in Normal Mode (Assignment + Delegation):
+   - Strengthen constraints so that no user can ever hold two mutually exclusive roles in Normal mode, regardless of whether roles are obtained via direct assignment or delegation. Update allRolesHeld and/or add a global fact or predicate to ensure this across all relevant paths.
+2. Delegation Expiry Order:
+   - Add or strengthen a fact: all delegations must satisfy delegatedAt < expiresAt (strictly increasing; no zero-duration delegations).
+3. EmergencyPrivilege Revocation:
+   - Add a constraint ensuring EmergencyPrivilege is always revoked at the first Normal state after Emergency mode; EmergencyPrivilege must never persist beyond that point.
+4. Emergency Delegation Expiry:
+   - Add or strengthen a constraint such that any delegation granted during Emergency mode expires at the first Normal state after Emergency ends, regardless of its original expiry value.
+5. Self-Delegation Prohibition:
+   - Explicitly prohibit self-delegation for all delegation relations.
+6. Coverage Predicate Planning:
+   - Ensure that Emergency mode is always exercised in all verification scenarios to validate Emergency-related requirements. Presence of mut-ex role pairs and users with distinct clearances can be covered, but only Emergency mode is strictly required for coverage.
+
+=== ASSUMPTIONS REVIEW ===
+- Keep: Mutual exclusivity enforcement must apply to both direct assignments and delegated roles in Normal mode.
+- Keep: EmergencyPrivilege must never persist into or beyond the first Normal state after Emergency ends.
+- Confirm: All delegations must have delegatedAt < expiresAt (strictly).
+- Confirm: Self-delegation is always prohibited.
+- Confirm: Delegations granted during Emergency must expire at the first Normal state after Emergency, regardless of their intended expiry.
+- Reduce: Do not enforce the presence of users at every clearance level or mut-ex pairs at all times—only require Emergency mode to be present in verification scenarios.
+
+=== STRONGER CHECKS ===
+1. Add negative assertions to check:
+   - No user holds two mutually exclusive roles in Normal mode, through any means (assignment or delegation).
+   - No delegation exists where delegatedAt >= expiresAt.
+   - EmergencyPrivilege never persists after Emergency mode ends.
+   - All delegations granted during Emergency expire exactly at the first Normal state after Emergency.
+   - No self-delegation exists.
+2. After all requirements pass, incrementally add coverage predicates for mut-ex role pairs and distinct clearances if needed—but always enforce Emergency mode presence for coverage.
+3. Add assertions to ensure Emergency mode occurs in every test scenario.
+
+=== REQUIREMENT_UPDATES ===
+1. R6.1 (Mutual Exclusivity in Normal Mode):
+   - Clarify: No user may simultaneously hold two mutually exclusive roles in Normal mode, by any means (assignment or delegation).
+2. R4.2a (Emergency Delegation Expiry):
+   - Specify: Delegations granted in Emergency mode must expire exactly at the first Normal state after Emergency, regardless of their original expiry.
+3. R3.3 / R4.1 (EmergencyPrivilege Revocation):
+   - Require: EmergencyPrivilege must always be revoked at the first Normal state after Emergency and never persist beyond that.
+4. R5.4 (Delegation Expiry Order):
+   - Require: delegatedAt < expiresAt (strictly; zero-duration delegations not allowed).
+5. R5.3 (Self-Delegation):
+   - Confirm: Self-delegation is always prohibited.
+6. General/Coverage:
+   - Require: Emergency mode must always be present in verification scenarios to exercise and validate Emergency-specific requirements. Presence of mut-ex pairs and distinct clearances can be present but are not mandatory in all scenarios.
+
+=== USER QUESTIONS ===
+1. In Normal mode, should mutual exclusivity be enforced across both direct assignment and delegated roles?  
+   - User answered: Yes, mutual exclusion must be enforced for both assignment and delegation.
+2. Should delegations granted during Emergency mode be revoked at the first Normal state after Emergency, regardless of intended expiry?  
+   - User answered: Yes, revoke all such delegations at the first Normal state after Emergency.
+3. Is it acceptable for a delegation to have delegatedAt and expiresAt at the same state (zero-duration delegation)?  
+   - User answered: No, expiry must always be strictly after grant.
+4. Are there any scenarios where EmergencyPrivilege should persist past the first Normal state after Emergency mode?  
+   - User answered: No, revocation must always be immediate at that transition.
+5. For coverage, should there always be users at every clearance level and mut-ex role pairs in all scenarios?  
+   - User answered: No, only Emergency mode must always be exercised for coverage; mut-ex pairs and user clearance diversity are recommended but not required in every scenario.
+
+=== HANDOFF TO RE ===
+1. Add/strengthen constraints to:
+   - Enforce mutual exclusion in Normal mode for both assignment and delegation.
+   - Enforce delegatedAt < expiresAt for all delegations (strictly).
+   - Guarantee EmergencyPrivilege is always revoked at the first Normal state after Emergency.
+   - Ensure all delegations granted during Emergency expire at the first Normal state after Emergency.
+   - Prohibit self-delegation.
+2. Update requirements as specified to remove ambiguity and ensure alignment with model constraints, especially for Emergency scenarios and coverage.
+3. Review and reduce assumptions as per clarified user intent—only Emergency mode presence is mandatory for coverage.
+4. Add negative assertions for all above constraints and ensure Emergency mode occurs in all test scenarios.
+5. Incrementally add further coverage predicates (e.g., mut-ex pairs, user clearances) only after core requirements are satisfied.
+6. Prioritize the above constraint and requirement clarifications before expanding model scope or test scenario diversity.
+```
+
+=== FINAL CONVERGENCE ===
+False
+

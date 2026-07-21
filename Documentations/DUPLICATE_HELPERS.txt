@@ -1,0 +1,103 @@
+//DUPLICATE code — Similar/duplicated helper inventory for AutoRE, generated 2026-07-06
+//
+// Companion to UNUSED_CODE.txt. Each entry below is a verified duplication with a
+// proposed consolidation, ranked by lines saved.
+//
+// STATUS UPDATE 2026-07-07: items 1-6 have been APPLIED; items 7-8 were intentionally
+// skipped (7: no line savings, adds coupling; 8: medium behavioral risk). Originals of
+// all 11 edited files, a unified patch, and step-by-step reversal instructions are in
+// Documentations/consolidation_backup/ (see README_REVERSAL.md).
+
+====================================================================================================
+1. ALLOY CODE-FENCE EXTRACTION REGEX — 5 near-identical copies            (~50 lines, risk: SAFE)
+====================================================================================================
+The pattern r'```alloy\s*\n(.*?)```' plus surrounding extract-or-fallback logic is
+re-implemented in:
+  - src/utils/artifact_store.py:61        (store_alloy_model)
+  - src/utils/alloy_model_validator.py:64 (validate_alloy_model_completeness)
+  - src/utils/alloy_model_validator.py:143
+  - src/actions/requirement_actions.py:380 (BuildAlloyModel.run)
+  - src/utils/file_manager.py:147         (save_alloy_model)
+  Variant: src/workflow.py:1893 uses r'```alloy\s*\n(.*?)\n```' (requires \n before the
+  closing fence — silently drops a model whose last line abuts the backticks; the other
+  copies do not).
+Proposal: one shared extract_alloy_code(text) -> str (e.g. in alloy_model_validator.py or a
+small alloy_code.py), replacing all six sites; unifying also fixes the workflow.py variant's
+edge case.
+
+====================================================================================================
+2. FEEDBACK STORAGE SEQUENCE — 3 copies in workflow.py                    (~35 lines, risk: LOW)
+====================================================================================================
+The sequence "artifacts.store_feedback(...) + file_manager.save_feedback({feedback,
+final_convergence}, iteration) + entry.evaluator_feedback = ... + regression_log._save_to_file()"
+appears at:
+  - src/workflow.py:~1280 (syntax-repair path, action_type=GenerateSyntaxRepairInstruction)
+  - src/workflow.py:~1463 (semantic path, user reviewed)
+  - src/workflow.py:~1549 (semantic path, no user feedback)
+Proposal: AutoREWorkflow._store_final_feedback(feedback, final_convergence, action_type).
+
+====================================================================================================
+3. ISSUE-STRING PARSING — 2 identical blocks in regression_log.py         (~25 lines, risk: LOW)
+====================================================================================================
+The 3-fallback regex cascade parsing "syntax error at line N in X / syntax error in X /
+syntax error at line N (construct)" plus unsat/counterexample extraction is duplicated at:
+  - src/utils/regression_log.py:1334-1356 (current_issue)
+  - src/utils/regression_log.py:1369-1392 (entry.issue, inside the loop)
+Proposal: _extract_issue_components(issue: str) -> dict used by both.
+
+====================================================================================================
+4. [FIX INTENT] EXTRACTION — 2 similar functions                          (~15 lines, risk: LOW)
+====================================================================================================
+  - src/utils/regression_log.py:1740 extract_fix_intent(): multi-line capture until the next
+    [SECTION] header; returns "" when absent.
+  - src/utils/repair_plateau_detector.py:60 _extract_evaluator_fix_intent(): first line only,
+    truncated to 300 chars; returns None when absent.
+Proposal: keep the regression_log version as canonical, add an optional max_length parameter,
+and have repair_plateau_detector import it. Behavioral note to preserve: the detector treats
+empty/absent as "skip this iteration's intent", so map "" -> None at the call site.
+
+====================================================================================================
+5. _log() HELPER — 3 identical copies                                     (~6 lines, risk: LOW)
+====================================================================================================
+  - src/utils/error_normalizer.py:142
+  - src/utils/issue_pattern_tracker.py:62
+  - src/utils/semantic_issue_tracker.py:73
+Identical: `if self.logger and hasattr(self.logger, "log"): self.logger.log(message)`.
+Proposal: tiny module-level helper (e.g. safe_log(logger, msg) in logger.py) or a shared
+mixin for the three deterministic tracker classes.
+
+====================================================================================================
+6. CONVERGENCE_RECOMMENDATION REGEX — 2 copies in workflow.py             (~6 lines, risk: SAFE)
+====================================================================================================
+  - src/workflow.py:~1456 and src/workflow.py:~1536, identical pattern
+    r'===\s*CONVERGENCE_RECOMMENDATION\s*===.*?Status:\s*(TRUE|FALSE)'.
+Proposal: _parse_convergence(feedback: str) -> bool helper (folds naturally into the
+_store_final_feedback consolidation in item 2).
+
+====================================================================================================
+7. TIMESTAMP FORMAT STRINGS — 8 scattered literals                        (~3 lines, risk: SAFE)
+====================================================================================================
+datetime.now().strftime("%Y-%m-%d %H:%M:%S") at logger.py:44,64,204; requirement_actions.py:308;
+regression_log.py:1821; workflow.py:1168 — and strftime("%m%d") at requirement_actions.py:301;
+regression_log.py:1817.
+Proposal: two module constants (TIMESTAMP_LONG, TIMESTAMP_SHORT) in logger.py.
+
+====================================================================================================
+8. ALLOY COMMENT DETECTION — 2 overlapping implementations                (~10 lines, risk: MEDIUM)
+====================================================================================================
+  - src/utils/regression_log.py:752 count_non_comment_lines_between(): line counting with
+    // and /* */ handling, file-based.
+  - src/utils/alloy_model_validator.py:12 _strip_comments(): comment removal, string-based.
+Proposal: shared per-line comment-state helper used by both. MEDIUM risk because the two
+consumers need different outputs (count vs. stripped text); consolidate only the
+comment-boundary detection, not the whole functions.
+
+====================================================================================================
+NOT RECOMMENDED FOR CONSOLIDATION
+====================================================================================================
+- Section-extraction helpers (workflow._extract_section vs qa_parser parsers): same flavor but
+  different section grammars and data shapes; merging would couple unrelated formats.
+- BuildAlloyModel vs UpdateAlloyModel retry loops: similar shape but different validation rules
+  and prompt construction; a shared abstraction would obscure more than it saves.
+- find_containing_block: already consolidated previously (alloy_executor delegates to the
+  shared module-level function; error_normalizer reuses it).

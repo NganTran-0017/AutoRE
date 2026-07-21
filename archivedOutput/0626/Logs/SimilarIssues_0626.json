@@ -1,0 +1,40 @@
+{
+  "pred Next": [
+    0
+  ],
+  "fact DelegationClearance": [
+    1
+  ],
+  "pred precedes": [
+    9,
+    12,
+    13,
+    14
+  ],
+  "fun firstPendingFIFO": [
+    10,
+    11
+  ],
+  "pred R1": [
+    15
+  ],
+  "assert assertEmergencyActivationExactlyTwoAdmins": [
+    17,
+    18
+  ],
+  "fun directRoles": [
+    20,
+    21,
+    22
+  ],
+  "fact DirectRoleAssignmentTransition": [
+    39,
+    40
+  ],
+  "pred isDirectRoleRevoked": [
+    44
+  ],
+  "fact EmergencyProcessingPriority": [
+    51
+  ]
+}

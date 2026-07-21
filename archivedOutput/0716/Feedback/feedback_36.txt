@@ -1,0 +1,67 @@
+=== FEEDBACK ===
+```
+=== NEXT ACTION DECISION ===
+Decision: refine/narrow fix
+Rationale: User has clarified the intended requirement semantics (Option 2: restoration to NormalMode allowed before or at endedAt, but not after); model and assertion must be updated to reflect this, enabling targeted verification.
+
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Baseline: Satisfiable
+- Combined Model: Satisfiable
+- Assertions: Counterexamples (assertR2_EventualReturnToNormal fails)
+- Instances: Meaningful (except for violated assertion)
+- Vacuity: None
+
+=== CONVERGENCE_RECOMMENDATION ===
+Status: FALSE
+Reasoning: Critical liveness property remains unsatisfied under the prior requirement wording; requirement is now clarified, but model and assertion must be revised and re-verified to reflect the new semantics ("no later than endedAt" restoration). Convergence is pending this update and successful verification.
+
+=== REPAIR INSTRUCTIONS ===
+- Update the assertion for assertR2_EventualReturnToNormal to require that, for every EmergencyTrigger, the system is in NormalMode at endedAt (or earlier), and is not in EmergencyMode at or after endedAt in the corresponding session.
+    - Example Alloy assertion fragment:
+      ```
+      assert assertR2_EventualReturnToNormal {
+        all et: EmergencyTrigger |
+          some s: State | s.session = et.session and s.time = et.endedAt and s.mode = NormalMode
+          and all s': State | s'.session = et.session and s'.time >= et.endedAt implies s'.mode = NormalMode
+      }
+      ```
+      (Adjust as necessary for exact model structure and temporal encoding.)
+- Remove or revise any prior model fixes that enforced synchronous (exact at endedAt) or allowed delayed restoration.
+- Re-run the Analyzer to confirm the updated assertion passes with meaningful instances.
+- Document the requirement update in both the specification and model comments for traceability.
+
+=== POTENTIAL REQUIREMENT ISSUES ===
+- Issue type: requirement ambiguity (now resolved)
+- Issue: Previous ambiguity in R2 regarding timing of transition to NormalMode after Emergency mode ended; specifically, whether restoration must be synchronous, permissive up to endedAt, or may be delayed. User has now selected the "no later than endedAt" option.
+- Rationale: Ambiguity led to repeated assertion failures and model repairs; explicit user selection resolves the requirement gap.
+- Action: Update the requirement and model to match clarified semantics; confirm that the assertion and model enforce "restoration to NormalMode no later than endedAt".
+
+=== ASSUMPTIONS REVIEW ===
+- Assumption: "For every EmergencyTrigger, there exists a State at endedAt in the same session where the mode is NormalMode, and for all States at or after endedAt, mode is NormalMode."
+- Category: need confirmation (now clarified)
+- Rationale: User has confirmed permissive restoration—system may return to NormalMode before or at endedAt, but not after; update model and documentation accordingly.
+
+=== REQUIREMENT UPDATES ===
+- Affected Requirement/Assumption/Constraint: R2: Emergency Mode Duration (SYSTEM OVERVIEW, R2), and assertion assertR2_EventualReturnToNormal.
+- Issue Type: ambiguity (now resolved)
+- Evidence: Three consecutive failed model repair attempts; assertion failures; user-provided clarification.
+- Recommended Update: Replace R2 requirement text with:
+    "For every EmergencyTrigger, the system MUST return to NormalMode no later than EmergencyTrigger.endedAt in the corresponding session, and remain in NormalMode for all subsequent times in that session."
+- Implication: System is now permitted to transition to NormalMode before or exactly at endedAt, but not after; assertion and model must match this behavior for correct verification.
+
+=== UPDATED USER QUESTIONS ===
+None
+
+=== Q&A STATUS UPDATE ===
+None - no status changes
+
+=== HANDOFF TO RE ===
+Priority 1 (Critical blockers): Update R2 requirement and assertion to enforce "no later than endedAt" restoration semantics; revise model and re-verify.
+Priority 2 (Important improvements): Confirm assertion passes with updated requirement; document requirement clarification in specification and model comments.
+Priority 3 (Optional enhancements): Review additional edge cases or negative scenarios (e.g., restoration just before endedAt) after successful re-verification.
+```
+
+=== FINAL CONVERGENCE ===
+False
+

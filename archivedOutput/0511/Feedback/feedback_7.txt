@@ -1,0 +1,59 @@
+=== FEEDBACK ===
+```
+=== VERIFICATION STATUS ===
+- Syntax: OK
+- Assertions: Counterexamples (assertR1, assertR2, assertR3, assertR4_2, assertR4_3)
+- Predicates: Satisfiable
+- Instances: Meaningful (no degenerate cases), but not all traces safe
+- Vacuity: None
+- Overall: Incomplete
+
+=== ALLOY_MODEL_IMPROVEMENTS ===
+1. Strengthen the transition constraint for Emergency mode to ensure exactly two administrators jointly trigger it, and only from Normal mode. Example:
+   - Add or update a fact: (s.mode = Emergency) => (#(s.emAdmins) = 2 and prevModeIsNormal[s])
+2. Add or enhance a fact ensuring that Emergency mode is always eventually followed by a return to Normal mode (liveness), but do not require a fixed bound. Example:
+   - Add a fact: all s: State | (s.mode = Emergency) => some s2: State | gt[s2, s] and s2.mode = Normal
+3. Enforce that, when transitioning from Emergency to Normal, all delegations assigned during Emergency have expiresAt set to the first Normal state after Emergency:
+   - Example fact: all s: State | (s.mode = Normal and prevModeIsEmergency[s]) => all d: Time/prev[s].delegations | (d.delegatedAt.mode = Emergency) => (d.expiresAt = s)
+4. Add a fact ensuring that all emAdmins from the previous Emergency state are included in needsCredentialUpdate immediately after Emergency ends:
+   - Example fact: all s: State | (s.mode = Normal and prevModeIsEmergency[s]) => Time/prev[s].emAdmins in s.needsCredentialUpdate
+5. Review and update mutual exclusion suspension logic. Ensure that, during Emergency, any user (not just emAdmins) can hold multiple mutually exclusive roles, and mutual exclusion is strictly enforced outside Emergency.
+
+=== ASSUMPTIONS REVIEW ===
+- Only emAdmins (the two triggering admins) hold EmergencyPrivilege and are required to update credentials; confirmed by user.
+- Emergency can be triggered only from Normal mode with exactly two administrators; must be strictly enforced.
+- Roles delegated prior to Emergency are not auto-revoked; only delegations assigned during Emergency are revoked at the first Normal state after Emergency. Confirmed by user.
+- Liveness (eventual return to Normal mode) is sufficient; no fixed bound required. Confirmed by user.
+- Mutual exclusion is suspended for all users during Emergency, not just emAdmins.
+
+=== STRONGER CHECKS ===
+1. Add assertions to check that Emergency mode cannot be entered with fewer or more than two admins, and only from Normal mode.
+2. Add a negative test to ensure delegations assigned during Emergency do not persist beyond the first Normal state after Emergency.
+3. Strengthen liveness checks: add an assertion that every trace with Emergency mode must eventually reach Normal mode before the trace ends (eventual, not bounded).
+4. Add an assertion that, after Emergency ends, only the two emAdmins are required to update credentials.
+5. Test scenarios where delegations are assigned just before Emergency mode begins, to ensure they are not incorrectly revoked.
+
+=== REQUIREMENT_UPDATES ===
+1. In R2, clarify that Emergency mode is required to eventually return to Normal mode, but no fixed bound on duration is imposed.
+2. Revise R4.2 to explicitly state: "Any delegation assigned during Emergency mode must end at the first Normal state after Emergency ends. Delegations from before Emergency mode remain subject to normal expiration/revocation, including during Emergency mode."
+3. In R4.3, explicitly state that only the two administrators who triggered the Emergency are required to update credentials after Emergency ends.
+4. In R1 and related assumptions, clarify that exactly two administrators may jointly trigger Emergency mode—no more, no fewer, and only from Normal mode.
+5. Add a requirement specifying that mutual exclusion is suspended for all users during Emergency mode.
+6. Specify that the EmergencyPrivilege is granted only to the two emAdmins, only during Emergency, and revoked at the conclusion of Emergency mode.
+
+=== USER QUESTIONS ===
+1. Confirmed: "eventually" returning to Normal is sufficient; no fixed bound required.
+2. Confirmed: Only the two admins who triggered Emergency mode are required to update credentials after Emergency.
+3. Confirmed: Mutual exclusion suspension during Emergency applies to all users.
+4. Confirmed: Only delegations assigned during Emergency are revoked at the end; those from before Emergency remain subject to normal rules.
+5. Confirmed: Emergency mode must eventually return to Normal mode; indefinite persistence is not permitted.
+
+=== HANDOFF TO RE ===
+1. Update the model to strictly enforce Emergency trigger (exactly two admins, only from Normal mode).
+2. Strengthen Emergency mode liveness to guarantee eventual (but not bounded) return to Normal.
+3. Add/clarify requirements and model constraints for credential updates and delegation revocation after Emergency, ensuring only the two emAdmins are affected and only delegations assigned during Emergency are revoked.
+4. Clarify and enforce that mutual exclusion suspension applies to all users during Emergency mode.
+5. Specify that EmergencyPrivilege is only granted to the two emAdmins during Emergency, and is revoked at the conclusion of Emergency mode.
+6. Review and update requirements to align with the clarified user intent and eliminate ambiguities.
+```
+

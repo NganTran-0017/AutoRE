@@ -30,7 +30,10 @@ class CLIInteraction:
 
         # Extension settings (per session)
         self.max_extensions = 10
-        self.extension_duration = 300  # 5 minutes per extension
+        # Each extension grants the same amount of time as the initial timeout
+        # (config.yaml user_interaction.response_timeout), so EXTEND restores a
+        # full response window rather than a fixed 5 minutes.
+        self.extension_duration = timeout
         self.extensions_used = 0
 
         # Countdown state
