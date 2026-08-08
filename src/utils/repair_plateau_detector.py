@@ -18,10 +18,12 @@ telemetry:
     counterexample) has persisted past the SemanticIssueTracker thresholds,
     produces the evidence block that escalates the Evaluator past
     model-only repair. The initial strategy is REQUIREMENTS_DIAGNOSIS;
-    apply_evidence_alignment() then runs the two-key evidence gate
-    (InterpretResults causal analysis x deterministic diagnostics) and may
-    redirect it to MODEL_OVERCONSTRAINT_REPAIR when either source shows the
-    cause is in the encoding, not the requirements.
+    apply_evidence_alignment() then runs the evidence gate
+    (InterpretResults causal analysis x deterministic diagnostics) and
+    redirects it to MODEL_OVERCONSTRAINT_REPAIR when the interpretation does
+    not attribute the failure to the requirements. The diagnostics corroborate
+    but do not veto: their "modeling" verdicts establish where the
+    contradiction sits, not whether the requirement it encodes is sound.
 
 Deterministic (non-LLM), mirrors the ErrorNormalizer/IssuePatternTracker style.
 
@@ -52,11 +54,24 @@ REQUIREMENTS_DIAGNOSIS = "REQUIREMENTS_DIAGNOSIS"
 # affected predicates/facts from the updated requirements (semantic
 # analogue of REGENERATE_BLOCK).
 REGENERATE_PREDICATES = "REGENERATE_PREDICATES"
-# Two-key evidence gate outcome: the escalated issues persisted, but the
-# combined evidence (InterpretResults causal analysis x deterministic
-# diagnostics) points at the encoding, not the requirements -> the directive
-# demands a targeted model repair instead of requirements diagnosis.
+# Evidence gate outcome: the escalated issues persisted, but the result
+# interpretation does not attribute the failure to the requirements (cause
+# model, mixed, or unknown) -> the directive demands a targeted model repair
+# instead of requirements diagnosis.
 MODEL_OVERCONSTRAINT_REPAIR = "MODEL_OVERCONSTRAINT_REPAIR"
+# Ownership audit outcome: constructs that belong to no live requirement
+# (orphans) plus the helpers they strand. These are DELETED, not regenerated -
+# an orphan's requirement no longer exists, so there is nothing to rebuild from.
+REMOVE_STALE_CONSTRUCTS = "REMOVE_STALE_CONSTRUCTS"
+# Probation outcome: a requirement update is on probation but nothing in the
+# model can be traced to it, so no evidence about it can ever arrive. Not a
+# repair strategy - the model may be perfectly healthy; it is an encoding
+# obligation, and the alternative to issuing it is waiting forever.
+ENCODE_PROVISIONAL = "ENCODE_PROVISIONAL"
+# Contest outcome: the user undid a requirement update the solver implicated.
+# The document changed back; the model still encodes what it used to say, so
+# the encoding has to follow the revert or the two disagree silently.
+REVERT_REQUIREMENT = "REVERT_REQUIREMENT"
 
 _PATTERN_TO_STRATEGY = {
     "repair_plateau": (3, REWRITE_BLOCK),
@@ -196,7 +211,11 @@ def collect_failed_fixes(
                 seen.add(intent)
                 fixes.append(f"(Evaluator, iteration {it}) {intent}")
         next_entry = by_iter.get(it + 1)
-        if next_entry is not None:
+        if next_entry is not None and getattr(next_entry, "kind", "repair") != "diagnostic":
+            # A Mode 3 iteration attempted no fix. Listing its DIAGNOSTIC EXECUTION
+            # report here would forbid the RE from ever applying the repair that
+            # experiment was run to validate - the exact failure Mode 3 exists to
+            # remove.
             applied = (getattr(next_entry, "fix_intent", "") or "").strip()
             if applied and applied not in seen and applied.lower() not in (
                 "no fix intent provided", "initial model creation", "model update"
@@ -434,8 +453,8 @@ def build_semantic_escalation(
 
 
 # --------------------------------------------------------------------------- #
-# Two-key evidence gate: requirements diagnosis only when BOTH the result
-# interpretation (InterpretResults) and the deterministic diagnostics agree
+# Evidence gate: the result interpretation (InterpretResults) decides the cause;
+# the deterministic diagnostics corroborate where it sits, and do not veto it
 # --------------------------------------------------------------------------- #
 
 # Phrase lists for classifying the interpretation's "Likely Cause" line.
@@ -502,7 +521,11 @@ def summarize_interpretation_cause(interpretation: Optional[str]) -> Dict[str, A
     return result
 
 
-def summarize_diagnostics_evidence(diagnostics: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def summarize_diagnostics_evidence(
+    diagnostics: Optional[Dict[str, Any]],
+    traceability: Optional[Any] = None,
+    recently_changed: Optional[List[str]] = None,
+) -> Dict[str, Any]:
     """
     Classify each predicate's deterministic-diagnosis result (from
     semantic_diagnostics.diagnose_unsat_predicates) as modeling evidence,
@@ -511,11 +534,25 @@ def summarize_diagnostics_evidence(diagnostics: Optional[Dict[str, Any]]) -> Dic
     Per-predicate verdicts:
       scope_artifact         SAT at enlarged bounds -> modeling (bounds, not requirements)
       internal_contradiction UNSAT with all facts disabled -> modeling
+      stale_requirement_encoding  the UNSAT is caused by a leftover encoding of
+                             a REQUIREMENT changed in a recent iteration (via the
+                             traceability map): either the diagnosed predicate
+                             itself (internal_contradiction) or a top-level fact
+                             blocking it (localized) traces to a changed
+                             requirement -> REQUIREMENT evidence (route to
+                             regeneration, not model overconstraint)
       requirement_conflict   minimal blocking set implicates >=2 requirements
-      single_requirement     blocking set implicates <2 requirements -> modeling-leaning
-                             (one requirement cannot be inconsistent with itself)
+      single_requirement     blocking set implicates exactly one requirement ->
+                             that requirement is internally inconsistent
+                             (self-contradictory) -> REQUIREMENT evidence
       inconclusive           no verdict (variant failures / missing data)
+
+    Args:
+        traceability: optional object with requirements_for(construct_name) ->
+            [req_id, ...] (a TraceabilityStore). Used to detect stale encodings.
+        recently_changed: requirement IDs changed in a recent iteration.
     """
+    changed = set(recently_changed or [])
     per_issue: Dict[str, str] = {}
     for name, entry in (diagnostics or {}).items():
         sweep = (entry or {}).get("scope_sweep") or {}
@@ -523,30 +560,57 @@ def summarize_diagnostics_evidence(diagnostics: Optional[Dict[str, Any]]) -> Dic
         if sweep.get("performed") and sweep.get("sat_at_larger_scope") is True:
             per_issue[name] = "scope_artifact"
         elif localization.get("verdict") == "internal_contradiction":
-            per_issue[name] = "internal_contradiction"
+            # A predicate that is UNSAT with all facts disabled is normally a
+            # modeling defect - UNLESS it encodes a just-changed requirement, in
+            # which case it is the stale encoding of the superseded requirement.
+            if traceability is not None and changed and (
+                set(traceability.requirements_for(name)) & changed
+            ):
+                per_issue[name] = "stale_requirement_encoding"
+            else:
+                per_issue[name] = "internal_contradiction"
         elif localization.get("verdict") == "localized":
-            implicated = localization.get("implicated_requirements") or []
-            per_issue[name] = (
-                "requirement_conflict" if len(implicated) >= 2
-                else "single_requirement"
-            )
+            # A fact blocking the predicate that encodes a just-changed
+            # requirement is the stale encoding of the superseded requirement
+            # (same root cause as the internal_contradiction case, but carried
+            # by a top-level fact rather than the predicate body). The localizer
+            # names the blocking facts; the map ties an un-prefixed one (e.g.
+            # EmergencyUniqueness) back to its requirement.
+            blockers = localization.get("blocking_facts") or []
+            if traceability is not None and changed and any(
+                set(traceability.requirements_for(f)) & changed for f in blockers
+            ):
+                per_issue[name] = "stale_requirement_encoding"
+            else:
+                implicated = localization.get("implicated_requirements") or []
+                per_issue[name] = (
+                    "requirement_conflict" if len(implicated) >= 2
+                    else "single_requirement"
+                )
         else:
             per_issue[name] = "inconclusive"
 
-    modeling = {"scope_artifact", "internal_contradiction", "single_requirement"}
+    # A single implicated requirement is still requirement-level evidence: a
+    # requirement can be internally inconsistent (self-contradictory), so its own
+    # facts blocking the predicate is a requirement defect, not a modeling one.
+    modeling = {"scope_artifact", "internal_contradiction"}
+    requirement = {
+        "requirement_conflict", "single_requirement", "stale_requirement_encoding",
+    }
     return {
         "ran": bool(per_issue),
         "per_issue": per_issue,
         "modeling_evidence": any(v in modeling for v in per_issue.values()),
-        "requirement_evidence": any(v == "requirement_conflict" for v in per_issue.values()),
+        "requirement_evidence": any(v in requirement for v in per_issue.values()),
     }
 
 
 _DIAG_VERDICT_LABELS = {
     "scope_artifact": "SAT at enlarged bounds -> bounded-search artifact (MODELING/scope evidence)",
     "internal_contradiction": "UNSAT with all facts disabled -> contradiction inside the predicate body or sig declarations (MODELING evidence)",
+    "stale_requirement_encoding": "the UNSAT is caused by a construct (the predicate itself, or a fact blocking it) that encodes a requirement changed in a recent iteration -> stale/superseded encoding left in the model (REQUIREMENT evidence; regenerate it)",
     "requirement_conflict": "minimal blocking fact set implicates 2+ requirements (REQUIREMENT evidence)",
-    "single_requirement": "minimal blocking fact set implicates fewer than 2 requirements (MODELING-leaning: one requirement cannot conflict with itself)",
+    "single_requirement": "minimal blocking fact set implicates exactly one requirement -> that requirement is internally inconsistent/self-contradictory (REQUIREMENT evidence)",
     "inconclusive": "no usable verdict (diagnostic variants failed or were skipped)",
 }
 
@@ -554,21 +618,32 @@ _DIAG_VERDICT_LABELS = {
 def apply_evidence_alignment(
     semantic_escalation: Dict[str, Any],
     interpretation: Optional[str],
+    traceability: Optional[Any] = None,
+    recently_changed: Optional[List[str]] = None,
 ) -> Dict[str, Any]:
     """
-    Two-key evidence gate over a level-3 semantic escalation.
+    Evidence gate over a level-3 semantic escalation.
 
-    Requirements diagnosis stays mandated ONLY when both evidence sources
-    support a requirement-level cause:
-      - the InterpretResults causal analysis points at the requirements, AND
-      - the deterministic diagnostics either corroborate it (a blocking set
-        implicating >=2 requirements) or produced no verdict (counterexample
-        issues, capped predicates, failed variants) - in which case the
-        interpretation alone decides.
-    Otherwise the escalation is redirected to MODEL_OVERCONSTRAINT_REPAIR:
-    the strategy field and the directive's STRATEGY line are rewritten.
+    The InterpretResults causal analysis decides. Requirements diagnosis is
+    mandated whenever it attributes the failure to the requirements, and
+    redirected to MODEL_OVERCONSTRAINT_REPAIR whenever it does not (cause
+    `model`, `mixed`, or `unknown`) - in that case the strategy field and the
+    directive's STRATEGY line are rewritten.
 
-    In both cases an "EVIDENCE ALIGNMENT (computed)" block is appended to the
+    The deterministic diagnostics corroborate; they do not veto. A `modeling`
+    verdict says WHERE the contradiction sits - inside a predicate body
+    (`internal_contradiction`) or below the bounds (`scope_artifact`) - not
+    whether the requirement that body transcribes is sound. A predicate that
+    faithfully encodes a self-contradictory requirement measures as
+    `internal_contradiction`, so treating that as a refutation of the
+    interpretation buried the requirement defect it was reporting. Both
+    remaining cases are handled downstream rather than here: the escalation
+    prompt's DETERMINISTIC DIAGNOSIS block overrides the binding rules per
+    issue for a scope artifact (`adjust scope/trace and rerun`), and the
+    REQUIREMENTS_DIAGNOSIS rulebook carries an explicit `model overconstraint`
+    exception for an encoding that is provably too strong.
+
+    In every case an "EVIDENCE ALIGNMENT (computed)" block is appended to the
     directive so GenerateSemanticFeedback sees both evidence streams and the
     binding conclusion. Best-effort: on any error the escalation is left
     unchanged.
@@ -580,7 +655,11 @@ def apply_evidence_alignment(
             return result
 
         interp = summarize_interpretation_cause(interpretation)
-        diag = summarize_diagnostics_evidence(semantic_escalation.get("diagnostics"))
+        diag = summarize_diagnostics_evidence(
+            semantic_escalation.get("diagnostics"),
+            traceability=traceability,
+            recently_changed=recently_changed,
+        )
 
         interp_supports_req = interp["cause"] == "requirement"
         if not interp_supports_req:
@@ -590,10 +669,13 @@ def apply_evidence_alignment(
                 f"requirements (verdict: {interp['cause']})"
             )
         elif diag["ran"] and diag["modeling_evidence"] and not diag["requirement_evidence"]:
-            strategy = MODEL_OVERCONSTRAINT_REPAIR
+            strategy = REQUIREMENTS_DIAGNOSIS
             reason = (
-                "the deterministic diagnosis shows modeling evidence and no "
-                "requirement-level conflict"
+                "the result interpretation attributes the failure to the "
+                "requirements; the deterministic diagnosis located the "
+                "contradiction in the encoding, which establishes WHERE it sits, "
+                "not whether the requirement that encoding transcribes is sound - "
+                "so it corroborates the location without refuting the cause"
             )
         elif diag["ran"] and diag["requirement_evidence"]:
             strategy = REQUIREMENTS_DIAGNOSIS
@@ -655,6 +737,76 @@ def apply_evidence_alignment(
 
 
 # --------------------------------------------------------------------------- #
+# Delivering the escalation: only the rulebook that applies
+# --------------------------------------------------------------------------- #
+
+# The PersistentIssueEscalation section carries one binding-rules block per
+# candidate strategy, and they are mutually exclusive: REQUIREMENTS_DIAGNOSIS
+# mandates the requirement entries MODEL_OVERCONSTRAINT_REPAIR forbids. Which
+# one applies was already settled deterministically by apply_evidence_alignment
+# before the prompt is built, so shipping both leaves the model holding two
+# opposed rulebooks and a pointer to the right one - a resolution step it can
+# get wrong, paid for on every escalated iteration.
+_BINDING_RULES_HEADER = "**BINDING RULES when STRATEGY is "
+# Emitted by build_semantic_escalation / apply_evidence_alignment above.
+_STRATEGY_LINE = "STRATEGY: "
+# Only meaningful while both blocks are present.
+_MULTI_BLOCK_POINTER = (
+    "Read ONLY the block matching the STRATEGY line above; the other does not "
+    "apply this iteration."
+)
+
+
+def strategy_from_directive(directive: Optional[str]) -> Optional[str]:
+    """The strategy the evidence settled on, read back off the directive text.
+
+    Returns None when the directive names none, or names more than one and they
+    disagree - both mean "not settled", and the caller must not act on a guess.
+    Disagreement is a real state, not a parsing artifact: _stage_stall_diagnosis
+    appends its own REQUIREMENTS_DIAGNOSIS block to an escalation the evidence
+    gate may have redirected to MODEL_OVERCONSTRAINT_REPAIR, and then both
+    rulebooks genuinely apply - to different issues.
+    """
+    if not directive:
+        return None
+    named = {
+        line.split(_STRATEGY_LINE, 1)[1].strip()
+        for line in directive.splitlines()
+        if _STRATEGY_LINE in line and line.strip().startswith(_STRATEGY_LINE)
+    }
+    return named.pop() if len(named) == 1 else None
+
+
+def select_binding_rules(section: str, directive: Optional[str]) -> str:
+    """Drop the binding-rules blocks that do not apply to this iteration.
+
+    Returns `section` unchanged whenever the choice is not certain: fewer than
+    two blocks, no settled strategy, or a strategy no block is written for. The
+    unchanged section is the behaviour that shipped before this selection
+    existed, so the fallback is never worse than not selecting.
+    """
+    if not section or section.count(_BINDING_RULES_HEADER) < 2:
+        return section
+
+    strategy = strategy_from_directive(directive)
+    if not strategy:
+        return section
+
+    head, _, rest = section.partition(_BINDING_RULES_HEADER)
+    blocks = [_BINDING_RULES_HEADER + b for b in rest.split(_BINDING_RULES_HEADER)]
+    kept = [b for b in blocks if b.startswith(_BINDING_RULES_HEADER + strategy)]
+    if len(kept) != 1:
+        # The strategy is real but no block states its rules (the syntax-ladder
+        # strategies, for one). Every block still applies as written - keep them.
+        return section
+
+    head = head.replace(_MULTI_BLOCK_POINTER, "")
+    while "\n\n\n" in head:
+        head = head.replace("\n\n\n", "\n\n")
+    return head.rstrip() + "\n\n" + kept[0].rstrip() + "\n"
+
+
+# --------------------------------------------------------------------------- #
 # Rung 5 of the semantic ladder: user decision gate + targeted regeneration
 # --------------------------------------------------------------------------- #
 
@@ -704,6 +856,648 @@ def remove_requirement_updates(feedback: str) -> str:
         len(lines),
     )
     return "\n".join(lines[:start] + lines[end:])
+
+
+# ---------------------------------------------------------------------- #
+# RE Mode 3 - the Evaluator's next-action decision is the diagnostic signal #
+# ---------------------------------------------------------------------- #
+# The presence of injected DIAGNOSTIC CANDIDATES text cannot select the mode:
+# it fires on essentially every UNSAT iteration and carries raw candidates the
+# Evaluator may not have adopted. The decision is the signal, and it is parsed
+# here the same deterministic way the gate decision and the STRATEGY line are.
+
+DIAGNOSTIC_DECISION = "run diagnostic experiments"
+
+NEXT_ACTION_DECISIONS = (
+    "keep fix",
+    "refine/narrow fix",
+    "partially revert",
+    "escalate to requirement clarification",
+    "adjust scope/trace and rerun",
+    DIAGNOSTIC_DECISION,
+)
+
+# Which construct kind a hypothesis is stated at. Only `predicate` survives
+# Phase 2 filtering, but the level must be parsed to be able to drop the others.
+DIAGNOSTIC_LEVELS = ("predicate", "fact", "scope")
+
+_PLAN_FIELDS = ("construct", "hypothesis", "level", "reading")
+
+
+def _section_lines(text: str, header_keywords: str) -> Optional[List[str]]:
+    """
+    Lines of a `=== SECTION ===` block, from the header to the next `=== ... ===`
+    header or EOF. Returns None when the section is absent (distinct from a
+    section that is present but empty, which returns []).
+    """
+    import re
+    header = re.compile(rf"^===\s*{header_keywords}\s*===", re.IGNORECASE)
+    any_header = re.compile(r"^===\s*.+?\s*===")
+    lines = (text or "").split("\n")
+    start = next((i for i, l in enumerate(lines) if header.match(l.strip())), None)
+    if start is None:
+        return None
+    end = next(
+        (i for i in range(start + 1, len(lines)) if any_header.match(lines[i].strip())),
+        len(lines),
+    )
+    return lines[start + 1:end]
+
+
+def _clean_field_value(value: str) -> str:
+    """Strip markdown emphasis and template placeholders ("[exact name]" -> "")."""
+    import re
+    value = re.sub(r"[*`_]", "", value or "").strip()
+    if value.startswith("[") and value.endswith("]"):
+        return ""
+    if value.lower() in ("none", "n/a", "na", "-"):
+        return ""
+    return value
+
+
+def parse_next_action_decision(feedback: Optional[str]) -> Optional[str]:
+    """
+    Read the `Decision:` line out of `=== NEXT ACTION DECISION ===` and normalize
+    it to one of NEXT_ACTION_DECISIONS.
+
+    Returns None when the section, the line, or an unambiguous match is missing -
+    including when the line names two or more decisions (an echoed template).
+    Refusing is the safe outcome: every caller falls back to prior behaviour.
+    """
+    import re
+
+    section = _section_lines(feedback or "", r"NEXT\s+ACTION\s+DECISION")
+    if not section:
+        return None
+
+    line = next(
+        (l for l in section if re.match(r"^\s*[-*]?\s*(\*\*)?decision\b", l, re.IGNORECASE)),
+        None,
+    )
+    if line is None or ":" not in line:
+        return None
+
+    text = line.split(":", 1)[1]
+    text = re.sub(r"[*`_\[\]]", " ", text).lower()
+    text = re.sub(r"\s+", " ", text).strip().rstrip(".")
+    if not text:
+        return None
+
+    for decision in NEXT_ACTION_DECISIONS:
+        if text == decision:
+            return decision
+    matched = [d for d in NEXT_ACTION_DECISIONS if d in text]
+    return matched[0] if len(matched) == 1 else None
+
+
+def parse_diagnostic_plan(feedback: Optional[str]) -> Dict[str, Any]:
+    """
+    Parse `=== DIAGNOSTIC PLAN ===` into structured items.
+
+    Each item is introduced by a `Construct:` line and carries Hypothesis, Level
+    and Reading. An item missing any field, or naming a level outside
+    DIAGNOSTIC_LEVELS, is dropped with a reason rather than half-honoured - a
+    hypothesis with no reading declared BEFORE the run is exactly the post-hoc
+    reading this mode exists to prevent.
+
+    Returns {"items": [{construct, hypothesis, level, reading}], "dropped":
+    [{"construct", "reason"}]}. Callers must log the drops; nothing here is
+    allowed to disappear silently.
+    """
+    import re
+
+    result: Dict[str, Any] = {"items": [], "dropped": []}
+    section = _section_lines(feedback or "", r"DIAGNOSTIC\s+PLAN")
+    if not section:
+        return result
+
+    field_line = re.compile(
+        rf"^\s*[-*]?\s*(\*\*)?({'|'.join(_PLAN_FIELDS)})(\*\*)?\s*:\s*(.*)$",
+        re.IGNORECASE,
+    )
+
+    raw_items: List[Dict[str, str]] = []
+    current: Optional[Dict[str, str]] = None
+    field: Optional[str] = None
+    for line in section:
+        match = field_line.match(line)
+        if match:
+            field = match.group(2).lower()
+            value = match.group(4).strip()
+            if field == "construct":
+                current = {"construct": value}
+                raw_items.append(current)
+            elif current is not None:
+                current[field] = value
+        elif current is not None and field and line.strip():
+            # Continuation of the field above (a wrapped hypothesis or reading).
+            current[field] = (current.get(field, "") + " " + line.strip()).strip()
+
+    for raw in raw_items:
+        item = {f: _clean_field_value(raw.get(f, "")) for f in _PLAN_FIELDS}
+        name = item["construct"] or "(unnamed)"
+        if not item["construct"]:
+            result["dropped"].append({"construct": name, "reason": "no construct named"})
+            continue
+        if item["level"].lower() not in DIAGNOSTIC_LEVELS:
+            result["dropped"].append({
+                "construct": name,
+                "reason": f"level '{raw.get('level', '')}' is not one of "
+                          f"{'/'.join(DIAGNOSTIC_LEVELS)}",
+            })
+            continue
+        if not item["hypothesis"]:
+            result["dropped"].append({"construct": name, "reason": "no hypothesis stated"})
+            continue
+        if not item["reading"]:
+            result["dropped"].append({
+                "construct": name,
+                "reason": "no reading declared before the run",
+            })
+            continue
+        item["level"] = item["level"].lower()
+        result["items"].append(item)
+
+    return result
+
+
+def _declared_or_mentioned(model_text: str) -> Any:
+    """
+    Predicate over construct names: True when the name is a declared block
+    (fact/pred/assert/fun/sig) or appears anywhere in the model as a whole word.
+
+    Deliberately the weakest form of "exists in the model". A false drop turns a
+    diagnostic iteration into a repair iteration silently, which is worse than
+    letting through a name that only appears in a comment - the analyzer will
+    simply not produce a probe verdict for it, and T1's manifest reports it as
+    `not run`.
+    """
+    import re
+
+    names = set()
+    try:
+        from .semantic_diagnostics import extract_all_blocks
+        names = {b["name"] for b in extract_all_blocks(model_text or "")}
+    except Exception:
+        pass
+    names |= set(re.findall(r"^\s*(?:one\s+|abstract\s+)*sig\s+(\w+)",
+                            model_text or "", re.MULTILINE))
+
+    def exists(name: str) -> bool:
+        if name in names:
+            return True
+        return bool(re.search(rf"\b{re.escape(name)}\b", model_text or ""))
+
+    return exists
+
+
+def filter_diagnostic_plan(
+    items: List[Dict[str, str]],
+    model_text: Optional[str] = None,
+    diagnostics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Phase 2 guard rails: the Evaluator judges WHETHER to diagnose, code decides
+    WHAT survives.
+
+    Drops, each with a reason:
+      - level `fact`   - the deterministic localizer already tests facts by
+                         disabling them one at a time, and a fact constrains the
+                         probe too, so a predicate-level probe cannot answer it
+                         (this is the `EmergencyUnique` case);
+      - level `scope`  - only when the scope sweep already ran for that construct;
+                         an unswept construct keeps the item, because a larger-scope
+                         probe is a new `run` command and stays additive;
+      - unknown name   - a construct that appears nowhere in the model is untestable
+                         as written.
+
+    Filtering with neither model_text nor diagnostics returns the items unchanged:
+    missing evidence must not silently discard a plan.
+    """
+    result: Dict[str, Any] = {"items": [], "dropped": []}
+    exists = _declared_or_mentioned(model_text) if model_text else None
+    swept = {
+        name
+        for name, entry in (diagnostics or {}).items()
+        if ((entry or {}).get("scope_sweep") or {}).get("performed")
+    }
+
+    for item in items or []:
+        name = item.get("construct", "")
+        level = (item.get("level") or "").lower()
+
+        if level == "fact":
+            result["dropped"].append({
+                "construct": name,
+                "reason": "fact-level hypothesis: the deterministic localizer already "
+                          "tests facts by disabling them, and a fact constrains the probe too",
+            })
+            continue
+        if level == "scope" and name in swept:
+            result["dropped"].append({
+                "construct": name,
+                "reason": "scope-level hypothesis already measured by the scope sweep",
+            })
+            continue
+        if exists is not None and not exists(name):
+            result["dropped"].append({
+                "construct": name,
+                "reason": "names a construct that does not appear in the model",
+            })
+            continue
+        result["items"].append(item)
+
+    return result
+
+
+DROPPED_ITEMS_HEADING = "=== DIAGNOSTIC ITEMS NOT RUN (already measured) ==="
+
+
+def build_diagnostic_status_block(
+    dropped: List[Dict[str, str]],
+    diagnostics: Optional[Dict[str, Any]] = None,
+) -> str:
+    """
+    Render the guard-railed-away plan items with whatever the deterministic
+    diagnosis already measured about each one.
+
+    A dropped item must not simply vanish: the Evaluator proposed it because it
+    wanted an answer, and for the two levels code drops - `fact` and `scope` -
+    that answer already exists (the localizer disables facts one at a time; the
+    sweep re-runs at enlarged bounds). Carrying the measurement is what turns a
+    refusal into a result. The RE echoes this block in its DIAGNOSTIC EXECUTION
+    report so the status reaches the Evaluator through the regression entry.
+
+    Data only, as everywhere in this module. Returns "" when nothing was dropped.
+    """
+    if not dropped:
+        return ""
+
+    diagnostics = diagnostics or {}
+    lines = [DROPPED_ITEMS_HEADING]
+    for drop in dropped:
+        name = drop.get("construct") or "(unnamed)"
+        lines.append(f"- Construct: {name}")
+        lines.append(f"  Not run: {drop.get('reason', 'no reason recorded')}")
+
+        measured: List[str] = []
+        # A fact: the localizer names the predicates it provably blocks.
+        blocks = [
+            pred for pred, entry in diagnostics.items()
+            if name in (((entry or {}).get("localization") or {}).get("blocking_facts") or [])
+        ]
+        if blocks:
+            measured.append(
+                f"deterministic localizer: proven to block {', '.join(sorted(blocks))}"
+            )
+        # A predicate: its own sweep and localization verdicts.
+        entry = diagnostics.get(name) or {}
+        sweep = entry.get("scope_sweep") or {}
+        if sweep.get("performed"):
+            verdict = sweep.get("sat_at_larger_scope")
+            measured.append(
+                f"scope sweep ({sweep.get('swept_command', 'enlarged bounds')}): "
+                + ("SAT at larger scope - bounded-search artifact"
+                   if verdict is True else
+                   "still UNSAT at larger scope - genuine over-constraint")
+            )
+        localization = entry.get("localization") or {}
+        if localization.get("verdict"):
+            blocking = ", ".join(localization.get("blocking_facts") or []) or "none"
+            measured.append(
+                f"localizer verdict: {localization['verdict']} (blocking facts: {blocking})"
+            )
+
+        if measured:
+            for line in measured:
+                lines.append(f"  Measured: {line}")
+        else:
+            lines.append(
+                "  Measured: no deterministic result for this construct - it was dropped "
+                "as untestable as written, not as already answered"
+            )
+    return "\n".join(lines)
+
+
+def should_run_diagnostic_iteration(
+    feedback: Optional[str],
+    model_text: Optional[str] = None,
+    diagnostics: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Decide whether the RE's next model update is a diagnostic iteration (Mode 3)
+    or an ordinary semantic repair (Mode 2).
+
+    Both conditions must hold: the Evaluator chose `run diagnostic experiments`,
+    AND at least one plan item survives parsing and the Phase 2 guard rails. A
+    diagnostic decision with nothing usable behind it falls back to Mode 2 - the
+    same deterministic downgrade used everywhere else in this module.
+
+    Returns {"diagnostic", "decision", "items", "dropped", "reason"}.
+    """
+    decision = parse_next_action_decision(feedback)
+    if decision != DIAGNOSTIC_DECISION:
+        named = f"'{decision}'" if decision else "unparseable"
+        return {
+            "diagnostic": False,
+            "decision": decision,
+            "items": [],
+            "dropped": [],
+            "status_block": "",
+            "reason": f"next-action decision is {named}, not '{DIAGNOSTIC_DECISION}'",
+        }
+
+    plan = parse_diagnostic_plan(feedback)
+    if plan["items"]:
+        guarded = filter_diagnostic_plan(plan["items"], model_text, diagnostics)
+        plan = {
+            "items": guarded["items"],
+            "dropped": plan["dropped"] + guarded["dropped"],
+        }
+    if not plan["items"]:
+        return {
+            "diagnostic": False,
+            "decision": decision,
+            "items": [],
+            "dropped": plan["dropped"],
+            "status_block": build_diagnostic_status_block(plan["dropped"], diagnostics),
+            "reason": "diagnostic decision carries no usable plan item - falling back "
+                      "to semantic repair",
+        }
+
+    return {
+        "diagnostic": True,
+        "decision": decision,
+        "items": plan["items"],
+        "dropped": plan["dropped"],
+        "status_block": build_diagnostic_status_block(plan["dropped"], diagnostics),
+        "reason": f"{len(plan['items'])} plan item(s) survived parsing",
+    }
+
+
+PROBE_VERDICTS_HEADING = "=== DIAGNOSTIC EXPERIMENT RESULTS (measured) ==="
+
+# Strategy name for the re-issue of a planned experiment that produced no probe.
+RERUN_DIAGNOSTIC_PROBES = "RERUN_DIAGNOSTIC_PROBES"
+
+# An item is re-issued once. A second miss abandons it rather than looping: two
+# failures to express the same hypothesis is evidence about the hypothesis, not
+# about the RE's diligence.
+REISSUE_LIMIT = 2
+
+
+def build_diagnostic_reissue(
+    current_iteration: int,
+    items: Optional[List[Dict[str, Any]]] = None,
+    abandoned: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Build a RERUN_DIAGNOSTIC_PROBES directive for plan items that were ordered
+    but produced no probe.
+
+    An unrun item is the one outcome that answers nothing: it cannot be read as
+    refuted (that is the whole point of the `not_run` status), so the hypothesis
+    just sits unmeasured while the readback correctly refuses to conclude from
+    it. Asking again once is what turns that into either an answer or a stated
+    impossibility.
+
+    `items` are being re-issued (each carries its `attempt`); `abandoned` were
+    already re-issued once and missed again - they are named so their silence is
+    on the record rather than looking like they were never planned.
+
+    Returns the usual directive shape; empty directive when there is nothing to say.
+    """
+    result: Dict[str, Any] = {
+        "escalation_level": 5,
+        "strategy": RERUN_DIAGNOSTIC_PROBES,
+        "escalated_issues": [],
+        "rerun_targets": [i.get("construct") for i in (items or [])],
+        "abandoned_targets": [i.get("construct") for i in (abandoned or [])],
+        "directive": "",
+    }
+    if not (items or abandoned):
+        return result
+
+    lines = [
+        "ESCALATION LEVEL: 5",
+        f"STRATEGY: {RERUN_DIAGNOSTIC_PROBES}",
+        "TRIGGER: experiments were planned for the previous iteration and no probe "
+        "reported for them. An experiment that did not run measured NOTHING - it is "
+        "not a refuted hypothesis, so the question is still open.",
+    ]
+
+    if items:
+        lines.append("")
+        lines.append(
+            "RE-RUN these experiments. They belong to this iteration's plan even though "
+            "they are listed here rather than in the DIAGNOSTIC PLAN section: number "
+            "their probes CONTINUING the plan's numbering, in the order listed below "
+            "(if the plan holds 2 items, the first item here is probe3_). Write the "
+            "probe exactly as described; if the hypothesis genuinely cannot be expressed "
+            "as an additive probe, say so and name what blocks it. Do NOT omit it "
+            "silently a second time:"
+        )
+        for item in items:
+            lines.append(f"  - Construct: {item.get('construct', '')}")
+            lines.append(f"    Hypothesis: {item.get('hypothesis', '')}")
+            lines.append(f"    Declared reading: {item.get('reading', '')}")
+            if (item.get("attempt") or 1) > 1:
+                lines.append(
+                    "    NOTE: this was already asked for once and produced no probe."
+                )
+
+    if abandoned:
+        lines.append("")
+        lines.append(
+            "NOT RETRIED (asked twice, no probe either time) - these hypotheses remain "
+            "UNMEASURED. Draw no conclusion from them; they are neither confirmed nor "
+            "refuted:"
+        )
+        for item in abandoned:
+            lines.append(f"  - {item.get('construct', '')}: {item.get('hypothesis', '')}")
+
+    result["directive"] = "\n".join(lines)
+    return result
+
+
+def read_back_probe_verdicts(
+    plan_items: Optional[List[Dict[str, str]]],
+    satisfied: Optional[List[str]] = None,
+    unsatisfied: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Phase 5 readback: join the probes' analyzer verdicts back onto the plan they
+    were written from (T1 - the plan is a manifest, not a wish list).
+
+    Each item gets one of three statuses, and the third is the reason this
+    function exists:
+
+      confirmed - a probe ran and its declared reading is met (SAT)
+      refuted   - a probe ran and its declared reading is not met (UNSAT)
+      not_run   - NO probe reported for this item
+
+    `not_run` must never collapse into `refuted`. A probe that was never written
+    produces no row in the analyzer output, and reading that silence as UNSAT is
+    how "both hypotheses exonerated - so the defect is requirement-level" gets
+    concluded from one experiment that ran and one that never existed.
+
+    Probes are matched by position: item i owns `probe<i+1>_*`.
+    """
+    import re
+
+    satisfied = list(satisfied or [])
+    unsatisfied = list(unsatisfied or [])
+    results: List[Dict[str, Any]] = []
+
+    for index, item in enumerate(plan_items or [], start=1):
+        prefix = re.compile(rf"^probe{index}_", re.IGNORECASE)
+        sat = [n for n in satisfied if prefix.match(n)]
+        unsat = [n for n in unsatisfied if prefix.match(n)]
+        if sat:
+            status, probe = "confirmed", sat[0]
+        elif unsat:
+            status, probe = "refuted", unsat[0]
+        else:
+            status, probe = "not_run", None
+        results.append({
+            "index": index,
+            "construct": item.get("construct", ""),
+            "hypothesis": item.get("hypothesis", ""),
+            "reading": item.get("reading", ""),
+            "probe": probe,
+            "status": status,
+        })
+
+    return {
+        "results": results,
+        "probes": [r["probe"] for r in results if r["probe"]],
+        "not_run": [r["construct"] for r in results if r["status"] == "not_run"],
+        "all_refuted": bool(results) and all(r["status"] == "refuted" for r in results),
+    }
+
+
+def build_probe_verdict_block(readback: Dict[str, Any]) -> str:
+    """
+    Render the readback as measured evidence for the escalation directive - data
+    only, alongside `blocking_facts`. The interpretation rules live in the prompt.
+
+    "all refuted" is stated explicitly because it is the finding that is easiest
+    to misread as failure: every candidate encoding was exonerated, which points
+    at the requirement rather than the model - but only when every item actually
+    ran, which is why `not_run` items suppress it.
+    """
+    results = (readback or {}).get("results") or []
+    if not results:
+        return ""
+
+    lines = [PROBE_VERDICTS_HEADING]
+    label = {
+        "confirmed": "CONFIRMED (SAT)",
+        "refuted": "REFUTED (UNSAT)",
+        "not_run": "NOT RUN - no probe reported",
+    }
+    for r in results:
+        lines.append(f"- Construct: {r['construct']}")
+        lines.append(f"  Hypothesis: {r['hypothesis']}")
+        lines.append(f"  Declared reading: {r['reading']}")
+        lines.append(f"  Probe: {r['probe'] or 'none'}")
+        lines.append(f"  Verdict: {label[r['status']]}")
+
+    if readback.get("not_run"):
+        lines.append(
+            "NOTE: " + ", ".join(readback["not_run"]) + " produced no verdict. An item that "
+            "did not run is UNMEASURED, not refuted - draw no conclusion from its absence."
+        )
+    elif readback.get("all_refuted"):
+        lines.append(
+            "NOTE: every hypothesis was refuted, and every item ran. The candidate encodings "
+            "are exonerated as the cause; the remaining explanation is at the requirement level."
+        )
+    return "\n".join(lines)
+
+
+_DIAGNOSTIC_PLAN_HEADER = "=== DIAGNOSTIC PLAN ==="
+
+
+def preserve_diagnostic_signal(draft: str, refined: str) -> Dict[str, Any]:
+    """
+    Carry a diagnostic decision and its plan across RefineFeedback.
+
+    RefineFeedback rewrites the whole feedback and does not carry the response
+    format, so a prompt rule cannot guarantee the decision line and the plan
+    survive - and they select how the RE runs next, not merely what it reads.
+    This is the same safety net `_inject_diagnostic_experiments` provides for the
+    candidates, applied to the signal.
+
+    The user's review may legitimately overturn the choice ("stop experimenting,
+    just fix it"), so an override is respected and restoration only fires when
+    the refined text names NO decision at all:
+
+      refined decision                       action
+      -------------------------------------  ----------------------------------
+      any other recognized decision          'overridden' - leave it alone
+      diagnostic, plan present               'intact'
+      diagnostic, plan missing               restore the plan section
+      unparseable / absent                   restore the decision line and plan
+
+    Returns {"text", "action", "restored": [...]}.
+    """
+    import re
+
+    result = {"text": refined, "action": "not_applicable", "restored": []}
+    if parse_next_action_decision(draft) != DIAGNOSTIC_DECISION:
+        return result
+
+    draft_plan_lines = _section_lines(draft, r"DIAGNOSTIC\s+PLAN")
+    plan_block = (
+        _DIAGNOSTIC_PLAN_HEADER + "\n" + "\n".join(draft_plan_lines).strip()
+        if draft_plan_lines else ""
+    )
+
+    refined_decision = parse_next_action_decision(refined)
+    if refined_decision is not None and refined_decision != DIAGNOSTIC_DECISION:
+        result["action"] = "overridden"
+        return result
+
+    text = refined
+    restored = []
+
+    if refined_decision is None:
+        decision_line = f"Decision: {DIAGNOSTIC_DECISION}"
+        lines = text.split("\n")
+        header = re.compile(r"^===\s*NEXT\s+ACTION\s+DECISION\s*===", re.IGNORECASE)
+        start = next((i for i, l in enumerate(lines) if header.match(l.strip())), None)
+        if start is None:
+            text = f"=== NEXT ACTION DECISION ===\n{decision_line}\n\n" + text.lstrip()
+        else:
+            existing = next(
+                (i for i in range(start + 1, len(lines))
+                 if re.match(r"^\s*[-*]?\s*(\*\*)?decision\b", lines[i], re.IGNORECASE)),
+                None,
+            )
+            if existing is None:
+                lines.insert(start + 1, decision_line)
+            else:
+                lines[existing] = decision_line
+            text = "\n".join(lines)
+        restored.append("decision")
+
+    if plan_block and not parse_diagnostic_plan(text)["items"]:
+        # Placed before REPAIR INSTRUCTIONS when that section exists, so the plan
+        # reads where the schema puts it; trailing otherwise.
+        marker = re.compile(r"^===\s*REPAIR\s+INSTRUCTIONS\s*===", re.IGNORECASE)
+        lines = text.split("\n")
+        at = next((i for i, l in enumerate(lines) if marker.match(l.strip())), None)
+        if at is None:
+            text = text.rstrip() + "\n\n" + plan_block + "\n"
+        else:
+            text = "\n".join(lines[:at] + plan_block.split("\n") + [""] + lines[at:])
+        restored.append("plan")
+
+    result["text"] = text
+    result["action"] = "restored" if restored else "intact"
+    result["restored"] = restored
+    return result
 
 
 def build_regeneration_escalation(
@@ -774,6 +1568,378 @@ def build_regeneration_escalation(
         if proposed_updates:
             lines.append("APPROVED REQUIREMENT UPDATES:")
             for line in proposed_updates.strip().splitlines():
+                lines.append(f"  {line}")
+        result["directive"] = "\n".join(lines)
+        return result
+    except Exception:
+        return result
+
+
+def build_stale_construct_removal(
+    current_iteration: int,
+    audit: Dict[str, Any],
+    closure: Dict[str, Any],
+    already_removed: bool = False,
+) -> Dict[str, Any]:
+    """
+    Build a REMOVE_STALE_CONSTRUCTS directive from an ownership audit.
+
+    Unlike REGENERATE_PREDICATES, these constructs are NOT rebuilt: an orphan
+    encodes a requirement that no longer exists, so there is nothing to rebuild
+    it from - it must be DELETED. Dead helpers stranded by that deletion go with
+    it (the closure's cascade).
+
+    Args:
+        current_iteration: iteration the audit was taken on.
+        audit: audit_ownership() result (supplies why each construct is going).
+        closure: compute_removable_closure() result (what may safely go).
+
+    Returns {'strategy', 'remove_targets', 'directive', ...}; an empty directive
+    when there is nothing safe to remove.
+    """
+    result: Dict[str, Any] = {
+        "escalation_level": 5,
+        "strategy": REMOVE_STALE_CONSTRUCTS,
+        "escalated_issues": [],
+        "remove_targets": list((closure or {}).get("remove") or []),
+        "cascaded": list((closure or {}).get("cascaded") or []),
+        "blocked": dict((closure or {}).get("blocked") or {}),
+        # Kept so a later re-render (e.g. after a deterministic prune) can still
+        # state WHY each construct went.
+        "audit": {
+            "orphan": dict((audit or {}).get("orphan") or {}),
+            "dead": list((audit or {}).get("dead") or []),
+            # Carried so the removal record can say WHAT went (fact vs assert),
+            # not just its name - the removal log renders "[fact]" from this.
+            "kinds": dict((audit or {}).get("kinds") or {}),
+        },
+        "directive": "",
+    }
+    if not result["remove_targets"]:
+        return result
+    try:
+        orphans = (audit or {}).get("orphan") or {}
+        dead = set((audit or {}).get("dead") or [])
+        cascaded = set((closure or {}).get("cascaded") or [])
+
+        lines = [
+            "ESCALATION LEVEL: 5",
+            f"STRATEGY: {REMOVE_STALE_CONSTRUCTS}",
+            "TRIGGER: constructs in the model no longer belong to any live "
+            "requirement.",
+        ]
+        if already_removed:
+            lines.append(
+                "The following constructs (and their run/check commands) have "
+                "ALREADY BEEN REMOVED from the model you were given. Do NOT "
+                "re-introduce them - their requirements no longer exist:"
+            )
+        else:
+            lines.append(
+                "DELETE these constructs entirely. Do NOT rewrite, weaken, or "
+                "convert them to assertions - they encode requirements that no "
+                "longer exist, so there is nothing to rebuild them from:"
+            )
+        for name in result["remove_targets"]:
+            if name in orphans:
+                why = f"encodes {', '.join(orphans[name])}, which is no longer in the requirements"
+            elif name in cascaded:
+                why = "helper left with no caller once the constructs above are deleted"
+            elif name in dead:
+                why = "dead code: no caller and no run/check command"
+            else:
+                why = "no live requirement owner"
+            lines.append(f"  - {name} ({why})")
+        if result["blocked"]:
+            lines.append(
+                "STILL REFERENCED (do not delete yet - remove the references first):"
+            )
+            for name, referrers in result["blocked"].items():
+                lines.append(f"  - {name} <- {', '.join(referrers)}")
+        lines.append(
+            "Continue from the model as given; keep every construct that still "
+            "serves a live requirement."
+            if already_removed else
+            "After deleting, ensure no remaining construct references a deleted "
+            "name, and keep every construct that still serves a live requirement."
+        )
+        result["directive"] = "\n".join(lines)
+        return result
+    except Exception:
+        return result
+
+
+def build_encode_provisional(
+    current_iteration: int,
+    unencoded: Optional[List[Dict[str, Any]]] = None,
+    unannotated: Optional[List[Dict[str, Any]]] = None,
+    previous_targets: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """
+    Build an ENCODE_PROVISIONAL directive for requirement updates that produced
+    no traceable construct.
+
+    A provisional requirement is decided by verifying its encoding, so an item
+    nothing in the model can be traced to accumulates no evidence in either
+    direction - it just sits, holding convergence open. That is a stall, and
+    waiting quietly is the one response that cannot resolve it.
+
+    The two causes need OPPOSITE remedies, so they are stated separately:
+      - `unencoded`   - nothing in the model names or annotates the requirement.
+                        It must be BUILT.
+      - `unannotated` - constructs exist that declare no requirement at all, so
+                        one of them plausibly encodes this item. It needs a
+                        `//@req` LABEL, not a rebuild - rebuilding here would
+                        duplicate a construct that is already there.
+
+    Each entry is {'req_id', 'text', 'streak', 'candidates'} ('candidates' only
+    for the unannotated case: the unowned constructs to choose among).
+
+    `previous_targets` are IDs this directive already asked for in an earlier
+    iteration. Naming them tells the RE its previous attempt did not land, so it
+    does not repeat it - the same rule the unowned-blocking-facts finding uses.
+
+    Returns the usual directive shape; an empty directive when nothing stalled.
+    """
+    result: Dict[str, Any] = {
+        "escalation_level": 5,
+        "strategy": ENCODE_PROVISIONAL,
+        "escalated_issues": [],
+        "encode_targets": [e.get("req_id") for e in (unencoded or [])],
+        "annotate_targets": [e.get("req_id") for e in (unannotated or [])],
+        "repeated": [],
+        "directive": "",
+    }
+    if not (unencoded or unannotated):
+        return result
+    try:
+        already = set(previous_targets or ())
+        all_ids = result["encode_targets"] + result["annotate_targets"]
+        result["repeated"] = [rid for rid in all_ids if rid in already]
+
+        lines = [
+            "ESCALATION LEVEL: 5",
+            f"STRATEGY: {ENCODE_PROVISIONAL}",
+            "TRIGGER: a requirement update is on probation, but no construct in "
+            "the model can be traced to it - so verification can never decide it.",
+            "This is a TRACEABILITY obligation, not a repair. The model may be "
+            "entirely healthy. Do not weaken, delete or rewrite anything that "
+            "works; make each requirement below traceable, and change nothing else.",
+        ]
+        if unencoded:
+            lines.append(
+                "BUILD - nothing in the model names or annotates these "
+                "requirements. Encode each one, per the MODELING DISCIPLINE (a "
+                "prospective R# becomes a predicate/assertion, never a fact), and "
+                "either carry the ID in the construct's name or mark it `//@req <ID>`:"
+            )
+            for item in unencoded:
+                lines.append(f"  - {item.get('req_id')}: {(item.get('text') or '').strip()}")
+        if unannotated:
+            lines.append(
+                "LABEL ONLY - constructs exist that declare no requirement, so one "
+                "of them likely already encodes these. Add `//@req <ID>` to the "
+                "construct that encodes each. Do NOT build a second construct, and "
+                "do not change any construct's logic:"
+            )
+            for item in unannotated:
+                candidates = ", ".join((item.get("candidates") or [])[:8]) or "(none listed)"
+                lines.append(f"  - {item.get('req_id')}: {(item.get('text') or '').strip()}")
+                lines.append(f"      candidates declaring nothing: {candidates}")
+        if result["repeated"]:
+            lines.append(
+                f"REPEATED: {', '.join(result['repeated'])}. This instruction was "
+                f"already delivered in an earlier iteration and did not land, so "
+                f"whatever you did last time did not make these traceable - do not "
+                f"repeat it. If a requirement genuinely cannot be encoded, say so "
+                f"explicitly and name what is ambiguous about it rather than "
+                f"emitting a construct that does not encode it."
+            )
+        result["directive"] = "\n".join(lines)
+        return result
+    except Exception:
+        return result
+
+
+def build_unmodelable_requirement_diagnosis(
+    current_iteration: int,
+    items: Optional[List[Dict[str, Any]]] = None,
+) -> str:
+    """
+    Evidence block for requirements the modeller could not encode at all.
+
+    Three iterations of directives produced no construct traceable to the
+    requirement, and the user chose to treat that as a fact about the
+    REQUIREMENT rather than about the modeller. That is the same conclusion
+    REQUIREMENTS_DIAGNOSIS already stands for - a requirement that resists
+    encoding is ambiguous, unmodelable, or contradictory as stated - so it is
+    delivered through the same channel rather than a new one.
+
+    Each entry is {'req_id', 'text', 'reason', 'conflicts_with'}. Returns the
+    directive text ("" when there is nothing to say); as everywhere in this
+    module it carries facts only.
+    """
+    entries = [e for e in (items or []) if (e or {}).get("req_id")]
+    if not entries:
+        return ""
+    lines = [
+        f"STRATEGY: {REQUIREMENTS_DIAGNOSIS}",
+        "UNMODELABLE REQUIREMENT(S): three consecutive iterations of explicit "
+        "encoding directives produced no construct that could be traced to "
+        "these requirements. The user has asked for them to be diagnosed "
+        "rather than re-attempted.",
+        "Treat the failure to encode as evidence about the REQUIREMENT TEXT. "
+        "For each one, say what makes it resist formalisation - which term is "
+        "undefined, which quantifier is ambiguous, which pair of clauses "
+        "cannot both hold - and propose wording that can be encoded. Do not "
+        "restate the requirement unchanged, and do not propose model repairs.",
+    ]
+    for item in entries:
+        lines.append(f"  - {item.get('req_id')}: {(item.get('text') or '').strip()}")
+        if item.get("reason"):
+            lines.append(f"      modeller outcome: {item['reason']}")
+        if item.get("conflicts_with"):
+            lines.append(
+                f"      also declared to contradict "
+                f"{', '.join(item['conflicts_with'])} - unsettled, and a "
+                f"contradiction the modeller cannot encode is a likely cause"
+            )
+    return "\n".join(lines)
+
+
+def build_requirement_revert(
+    current_iteration: int,
+    deleted: Optional[List[Dict[str, Any]]] = None,
+    restored: Optional[List[Dict[str, Any]]] = None,
+) -> Dict[str, Any]:
+    """
+    Build a REVERT_REQUIREMENT directive after a contested update was undone.
+
+    A revert is a DOCUMENT edit, and on its own it desynchronises the model: the
+    constructs written for the update are still there, encoding text the
+    document no longer carries. The two cases need opposite remedies, so they
+    are stated separately:
+
+      - `deleted`  - a provisional ADD was removed from the document. Its
+                     constructs now encode nothing and must be DELETED; there is
+                     no requirement left to rebuild them from.
+      - `restored` - a MODIFY was rolled back to its previous wording. Its
+                     constructs encode the superseded text and must be
+                     REGENERATED from the requirement as it now reads.
+
+    Each entry is {'req_id', 'text', 'constructs'}. As everywhere in this
+    module the directive carries facts only; the behavioural rules live in the
+    RE prompt's ESCALATION OVERRIDE section.
+    """
+    result: Dict[str, Any] = {
+        "escalation_level": 5,
+        "strategy": REVERT_REQUIREMENT,
+        "escalated_issues": [],
+        "remove_targets": sorted(
+            {c for e in (deleted or []) for c in (e.get("constructs") or [])}
+        ),
+        "regenerate_targets": sorted(
+            {c for e in (restored or []) for c in (e.get("constructs") or [])}
+        ),
+        "reverted_ids": ([e.get("req_id") for e in (deleted or [])]
+                         + [e.get("req_id") for e in (restored or [])]),
+        "directive": "",
+    }
+    if not (deleted or restored):
+        return result
+    try:
+        lines = [
+            "ESCALATION LEVEL: 5",
+            f"STRATEGY: {REVERT_REQUIREMENT}",
+            "TRIGGER: a requirement update was implicated by verification and "
+            "the user undid it. The requirements document has already been "
+            "changed back; the model has not, so it currently encodes wording "
+            "the document no longer carries.",
+            "Bring the encoding back in line with the document. Do not "
+            "re-litigate the requirement and do not weaken unrelated "
+            "constructs - the failure this addresses was the requirement, not "
+            "the model.",
+        ]
+        if deleted:
+            lines.append(
+                "DELETE - these requirements were removed from the document, so "
+                "the constructs below encode nothing. Delete them outright "
+                "(with any helper left stranded), and do not replace them:"
+            )
+            for item in deleted:
+                names = ", ".join(item.get("constructs") or []) or "(none traced)"
+                lines.append(f"  - {item.get('req_id')}: delete {names}")
+        if restored:
+            lines.append(
+                "REGENERATE - these requirements were rolled back to earlier "
+                "wording. Rebuild their constructs from the text below rather "
+                "than patching what is there, per the MODELING DISCIPLINE:"
+            )
+            for item in restored:
+                names = ", ".join(item.get("constructs") or []) or "(none traced)"
+                lines.append(
+                    f"  - {item.get('req_id')}: rebuild {names}\n"
+                    f"      now reads: {(item.get('text') or '').strip()}"
+                )
+        result["directive"] = "\n".join(lines)
+        return result
+    except Exception:
+        return result
+
+
+def build_requirement_change_regeneration(
+    current_iteration: int,
+    changed_requirement_ids: List[str],
+    regenerate_targets: List[str],
+    updated_requirements: Optional[str] = None,
+) -> Dict[str, Any]:
+    """
+    Build a REGENERATE_PREDICATES escalation triggered by a REQUIREMENT CHANGE
+    (not a persistence plateau).
+
+    When a requirement is modified/superseded, the constructs that encoded its
+    OLD meaning are stale and must be rebuilt from the new text - otherwise the
+    stale encoding lingers and produces an internal model conflict. This emits
+    the SAME directive shape and strategy as build_regeneration_escalation, so
+    the RE prompt's ESCALATION OVERRIDE (delete + rebuild from the UPDATED
+    requirements) handles it unchanged.
+
+    Args:
+        current_iteration: iteration the change was applied on.
+        changed_requirement_ids: requirement IDs whose text just changed (e.g.
+            from the requirement patch log: ["R6"]).
+        regenerate_targets: construct names encoding those requirements (from the
+            traceability map). If empty, returns an empty (no-op) directive.
+        updated_requirements: the new requirements text (source of truth).
+
+    Returns the same shape as the other builders, plus 'changed_requirement_ids'.
+    """
+    result = {
+        "escalation_level": 5,
+        "strategy": REGENERATE_PREDICATES,
+        "escalated_issues": [],
+        "changed_requirement_ids": list(changed_requirement_ids or []),
+        "regenerate_targets": list(regenerate_targets or []),
+        "directive": "",
+    }
+    if not regenerate_targets:
+        return result
+    try:
+        lines = [
+            "ESCALATION LEVEL: 5",
+            f"STRATEGY: {REGENERATE_PREDICATES}",
+            "TRIGGER: a requirement was changed; its previous encoding is now stale.",
+            "CHANGED REQUIREMENTS: " + ", ".join(result["changed_requirement_ids"]),
+            "The requirements document has been updated - it is the source of "
+            "truth for the regenerated constructs.",
+            "REGENERATE (delete and rebuild from the UPDATED requirements - do NOT "
+            "patch; the old construct encodes the SUPERSEDED requirement text):",
+        ]
+        for name in result["regenerate_targets"]:
+            lines.append(f"  - {name}")
+        if updated_requirements:
+            lines.append("UPDATED REQUIREMENTS:")
+            for line in updated_requirements.strip().splitlines():
                 lines.append(f"  {line}")
         result["directive"] = "\n".join(lines)
         return result

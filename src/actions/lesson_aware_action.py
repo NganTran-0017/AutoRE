@@ -107,6 +107,42 @@ class LessonAwareAction(Action):
         """
         return self.context.learning.get_conventions_for_prompt()
 
+    def annotate_requirements(self, requirements_document: str,
+                              addressing_markers: bool = False) -> str:
+        """
+        Render the requirements document with each item's STANDING attached.
+
+        Every requirement update is provisional until it has been verified for
+        three consecutive iterations, so an agent reading the document needs to
+        know which items are established and which are still on trial - most
+        of all the RE, whose encoding of a provisional item is the evidence
+        that decides it.
+
+        `addressing_markers=True` also prefixes the `[E#]` markers that let an
+        agent address bullet items in a patch operation. They are for the
+        Evaluator's patch step only; the RE never emits patch ops, and the
+        markers would just be noise it might copy into the model.
+
+        Falls back to the unannotated document if anything goes wrong - a
+        rendering aid must never cost the agent its requirements.
+        """
+        if not requirements_document:
+            return requirements_document
+        statuses = getattr(self.context, "requirement_status", None)
+        if statuses is None and not addressing_markers:
+            return requirements_document
+        try:
+            from ..utils import requirements_store as rs
+            from ..utils.requirement_status_store import STATUS_LEGEND
+
+            doc = rs.parse_requirements_document(requirements_document)
+            rendered = rs.annotate_for_prompt(doc, statuses)
+            if statuses is not None and statuses.outstanding_items():
+                rendered = f"{STATUS_LEGEND}\n\n{rendered}"
+            return rendered
+        except Exception:
+            return requirements_document
+
     def get_patterns(self, limit: int = 5) -> List[str]:
         """
         Get patterns for this agent/action.
@@ -270,7 +306,7 @@ class LessonAwareAction(Action):
             Cleaned output with learning markers removed
         """
         if defer:
-            cleaned_output, lessons = self.context.learning.parse_and_record(
+            cleaned_output, lessons, retractions = self.context.learning.parse_and_record(
                 agent_output=output,
                 agent_name=self.agent_name,
                 action_name=self.action_name,
@@ -279,10 +315,11 @@ class LessonAwareAction(Action):
             )
             pending = {
                 'lessons': lessons,
+                'retractions': retractions,
                 'agent_name': self.agent_name,
                 'action_name': self.action_name,
                 'source_iteration': self.context.iteration.current,
-            } if lessons else None
+            } if (lessons or retractions) else None
             setattr(self.context, pending_attr, pending)
             return cleaned_output
 

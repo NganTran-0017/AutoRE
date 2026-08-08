@@ -8,7 +8,7 @@ from ..utils.runtime_context import SharedRuntimeContext
 from ..actions.evaluation_actions import (
     RunAlloyAnalyzer,
     InterpretResults,
-    GenerateFeedback,
+    GenerateSemanticFeedback,
     UpdateRequirements,
     RefineFeedback
 )
@@ -39,7 +39,7 @@ class EvaluatorRole(Role):
         self.set_actions([
             RunAlloyAnalyzer(context, agent_name="Evaluator"),
             InterpretResults(context, agent_name="Evaluator"),
-            GenerateFeedback(context, agent_name="Evaluator"),
+            GenerateSemanticFeedback(context, agent_name="Evaluator"),
             UpdateRequirements(context, agent_name="Evaluator"),
             RefineFeedback(context, agent_name="Evaluator")
         ])

@@ -9,7 +9,13 @@ from datetime import datetime
 import json
 from pathlib import Path
 import difflib
+import re
 import sys
+
+# Assumption predicates are named A1, A2, A3, ... (kept separate from prospective
+# requirement predicates R1, R1R2, ...). Only these are eligible for auto-promotion
+# to facts; the regex guarantees requirement predicates can never accrue a streak.
+_ASSUMPTION_PRED_RE = re.compile(r'^A\d+$')
 
 
 def _debug_log(message: str):
@@ -87,6 +93,10 @@ class RegressionLogEntry:
     semantic_issue_persistence: Optional[Dict[str, Any]] = None  # Persistence of unsat predicates/counterexamples from SemanticIssueTracker
     repair_escalation: Optional[Dict[str, Any]] = None  # Escalation decision from RepairPlateauDetector (consumed by Evaluator/RE prompts)
     repair_signature: Optional[Dict[str, Any]] = None  # Normalized signature of the repair PRESCRIBED at this iteration (from normalize_repair): {'operation_families', 'target', 'strategy', 'normalized_signature'}
+    promoted_assumptions: Optional[List[str]] = None  # Cumulative set of assumption predicates (A1, A2, ...) promoted to `fact A_k` as of this iteration. Per MODELING DISCIPLINE, an assumption is auto-promoted after >=2 consecutive SAT iterations; a revert (promotion broke baseline) removes it from the set.
+    kind: str = "repair"  # "repair" (the RE attempted a fix) or "diagnostic" (RE Mode 3: the RE added probes to MEASURE, attempting no fix). A diagnostic entry is never listed as an attempted fix and never advances persistence - counting it would make careful diagnosis look like repeated failure.
+    diagnostic_execution: Optional[str] = None  # Mode 3 only: the RE's per-plan-item execution report (which experiment, which probe, executed yes/no + reason). Also summarized into fix_intent, which must never be blank.
+    diagnostic_plan: Optional[List[Dict[str, str]]] = None  # Mode 3 only: the MANIFEST the probes were written from (construct, hypothesis, level, reading). Persisted because the readback must know what was SUPPOSED to run - a probe that was never written produces no analyzer row, and without the manifest that silence is indistinguishable from UNSAT.
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_dict(self) -> Dict[str, Any]:
@@ -113,6 +123,10 @@ class RegressionLogEntry:
             "semantic_issue_persistence": self.semantic_issue_persistence,
             "repair_escalation": self.repair_escalation,
             "repair_signature": self.repair_signature,
+            "promoted_assumptions": self.promoted_assumptions,
+            "kind": self.kind,
+            "diagnostic_execution": self.diagnostic_execution,
+            "diagnostic_plan": self.diagnostic_plan,
             "timestamp": self.timestamp
         }
 
@@ -141,6 +155,10 @@ class RegressionLogEntry:
             semantic_issue_persistence=data.get("semantic_issue_persistence"),
             repair_escalation=data.get("repair_escalation"),
             repair_signature=data.get("repair_signature"),
+            promoted_assumptions=data.get("promoted_assumptions"),
+            kind=data.get("kind", "repair"),
+            diagnostic_execution=data.get("diagnostic_execution"),
+            diagnostic_plan=data.get("diagnostic_plan"),
             timestamp=data.get("timestamp", datetime.now().isoformat())
         )
 
@@ -190,6 +208,16 @@ class RegressionLog:
         removed = original_count - len(self.entries)
 
         if removed > 0:
+            # The symbol index maps error symbols to the iterations they appeared
+            # in; leaving discarded iterations in it would keep matching issues
+            # against a history that no longer exists.
+            trimmed_index = {}
+            for symbol, iterations in self.error_symbol_index.items():
+                kept = [i for i in iterations if i < max_iteration]
+                if kept:
+                    trimmed_index[symbol] = kept
+            self.error_symbol_index = trimmed_index
+
             self._save_to_file()
             print(f"  Regression log trimmed: removed {removed} entries after iteration {max_iteration - 1}")
 
@@ -248,24 +276,73 @@ class RegressionLog:
         
         print(f"  📊 Error symbol index saved to: {output_file}")
 
+    def _index_symbol(self, entry: RegressionLogEntry) -> None:
+        """Record this entry's error symbol against its iteration, once."""
+        if not (entry.issue and " in " in entry.issue):
+            return
+        symbol = entry.issue.split(" in ", 1)[1].strip()
+        if not symbol:
+            return
+        iterations = self.error_symbol_index.setdefault(symbol, [])
+        if entry.iteration_id not in iterations:
+            iterations.append(entry.iteration_id)
+
     def add_entry(self, entry: RegressionLogEntry) -> None:
         """
-        Add a new regression log entry.
+        Record the entry for its iteration, REPLACING any entry already held for
+        that iteration rather than appending beside it.
+
+        An iteration has one outcome, so the log holds one entry for it. Two
+        writers reach here - _step4_evaluate_model creates a placeholder when
+        none exists, and _step8_update_model records the update it just made -
+        and they normally land on different iterations because the counter
+        increments between them. When they do collide, appending was silently
+        destructive: get_entry and update_actual_impact both return the FIRST
+        match, so the newer, more complete record was written and then never
+        read again, while the stale placeholder answered every lookup for the
+        rest of the run. It also inflated every count taken over `entries`.
+
+        Replacing in place keeps chronological order and makes the newest
+        record the one that answers, which is what both call sites intend.
 
         Args:
-            entry: RegressionLogEntry to add
+            entry: RegressionLogEntry to record
         """
-        self.entries.append(entry)
+        existing = next(
+            (i for i, e in enumerate(self.entries)
+             if e.iteration_id == entry.iteration_id),
+            None,
+        )
+        if existing is None:
+            self.entries.append(entry)
+        else:
+            self.entries[existing] = entry
 
-        # Update error symbol index
-        if entry.issue and " in " in entry.issue:
-            symbol = entry.issue.split(" in ", 1)[1].strip()
-            if symbol:
-                if symbol not in self.error_symbol_index:
-                    self.error_symbol_index[symbol] = []
-                self.error_symbol_index[symbol].append(entry.iteration_id)
-
+        self._index_symbol(entry)
         self._save_to_file()
+
+    def deduplicate_entries(self) -> int:
+        """Collapse pre-existing duplicate iterations to their LAST entry.
+
+        Logs written before add_entry replaced in place carry several entries
+        for one iteration; every read has been answering from the first of them.
+        Keeping the last matches what add_entry now does. Returns the number of
+        entries dropped, so a caller can report it rather than silently
+        rewriting history.
+        """
+        by_iteration = {}
+        for entry in self.entries:
+            by_iteration[entry.iteration_id] = entry     # last write wins
+        if len(by_iteration) == len(self.entries):
+            return 0
+
+        removed = len(self.entries) - len(by_iteration)
+        self.entries = [by_iteration[i] for i in sorted(by_iteration)]
+        self.error_symbol_index = {}
+        for entry in self.entries:
+            self._index_symbol(entry)
+        self._save_to_file()
+        return removed
 
     def update_actual_impact(
         self,
@@ -298,6 +375,55 @@ class RegressionLog:
             if entry.iteration_id == iteration_id:
                 return entry
         return None
+
+    def get_promoted_assumptions(self) -> List[str]:
+        """
+        Return the current cumulative set of assumption predicates (A1, A2, ...) that
+        have been promoted to facts, read from the most recent entry that recorded it.
+
+        Entries snapshot the cumulative set as-of their iteration (reverts remove members),
+        so the latest non-None snapshot is the live set. Returns [] if none recorded yet.
+        """
+        for entry in reversed(self.entries):
+            if entry.promoted_assumptions is not None:
+                return list(entry.promoted_assumptions)
+        return []
+
+    def compute_assumption_sat_streaks(self, up_to_iteration: int) -> Dict[str, int]:
+        """
+        For each assumption predicate (A1, A2, ...) that is SAT at `up_to_iteration`,
+        count how many CONSECUTIVE iterations (counting backward, stopping at the
+        first gap or missing entry) it has been SAT - i.e. present in
+        current_result.satisfied_predicates.
+
+        Only names matching ^A\\d+$ are considered, so prospective requirement
+        predicates (R1, R1R2, ...) can never accrue a promotion streak. Mirrors the
+        backward-walk of _check_unsat_stuck. Returns {A_k: consecutive_sat_count}.
+        """
+        latest = self.get_entry(up_to_iteration)
+        if not latest or not latest.current_result:
+            return {}
+
+        latest_sat = {
+            name for name in (latest.current_result.satisfied_predicates or [])
+            if _ASSUMPTION_PRED_RE.match(name)
+        }
+
+        streaks: Dict[str, int] = {}
+        for name in latest_sat:
+            count = 0
+            i = up_to_iteration
+            while i >= 0:
+                entry = self.get_entry(i)
+                if not entry or not entry.current_result:
+                    break
+                if name in (entry.current_result.satisfied_predicates or []):
+                    count += 1
+                    i -= 1
+                else:
+                    break
+            streaks[name] = count
+        return streaks
 
     def get_iterations_for_symbol(self, symbol: str) -> List[int]:
         """
@@ -367,6 +493,16 @@ class RegressionLog:
 
         for i, entry in enumerate(recent, 1):
             lines.append(f"--- Iteration {entry.iteration_id} ---")
+            if getattr(entry, "kind", "repair") == "diagnostic":
+                # Mode 3: this iteration measured, it did not repair. Labelling it
+                # is what stops the reader treating an experiment as a failed fix,
+                # and the verdict table is the measurement itself - the hypotheses
+                # and readings declared before the run, joined to what the analyzer
+                # returned. Without it the probe verdicts are bare SAT/UNSAT lines.
+                lines.append("Iteration kind: DIAGNOSTIC (experiments only - no fix attempted)")
+                verdicts = format_probe_verdicts(entry)
+                if verdicts:
+                    lines.append(verdicts)
             lines.append(f"Fix Intent: {entry.fix_intent}")
             lines.append(f"Source: {entry.source_ref}")
 
@@ -539,7 +675,16 @@ class RegressionLog:
         # Reverse to show chronologically
         relevant_entries.reverse()
 
-        _debug_log(f"Found {len(relevant_entries)} relevant entries out of {len(self.entries)-1} previous iterations")
+        # Report the span, not just the count: "out of N previous" read as a
+        # trim failure when the log held duplicates, because N exceeded the
+        # iteration actually being run.
+        prior = self.entries[:-1]
+        span = (f"iterations {prior[0].iteration_id}-{prior[-1].iteration_id}"
+                if prior else "no prior iterations")
+        _debug_log(
+            f"Found {len(relevant_entries)} relevant entries out of "
+            f"{len(prior)} prior log entries ({span})"
+        )
 
         # Get current entry and previous iteration's issue
         current_entry = self.entries[-1] if self.entries else None  # Current iteration
@@ -592,6 +737,16 @@ class RegressionLog:
         
         for entry in relevant_entries:
             lines.append(f"--- Iteration {entry.iteration_id} ---")
+            if getattr(entry, "kind", "repair") == "diagnostic":
+                # Mode 3: this iteration measured, it did not repair. Labelling it
+                # is what stops the reader treating an experiment as a failed fix,
+                # and the verdict table is the measurement itself - the hypotheses
+                # and readings declared before the run, joined to what the analyzer
+                # returned. Without it the probe verdicts are bare SAT/UNSAT lines.
+                lines.append("Iteration kind: DIAGNOSTIC (experiments only - no fix attempted)")
+                verdicts = format_probe_verdicts(entry)
+                if verdicts:
+                    lines.append(verdicts)
             lines.append(f"Fix Intent: {entry.fix_intent}")
             lines.append(f"Source: {entry.source_ref}")
             
@@ -1355,11 +1510,45 @@ def _parse_issue_components(issue: str):
     return syntax_block, syntax_construct, unsat_preds, counterexamples
 
 
+def format_probe_verdicts(entry: Any) -> str:
+    """
+    Render a diagnostic entry's measured results: the manifest joined to what the
+    analyzer returned for each probe.
+
+    This is how the experiment's context reaches InterpretResults - the verdicts
+    alone are meaningless without the hypothesis and the reading declared before
+    the run, and a plan item with no probe must show as UNMEASURED rather than
+    silently look like an UNSAT.
+
+    Returns "" for a non-diagnostic entry or one with no manifest.
+    """
+    if getattr(entry, "kind", "repair") != "diagnostic":
+        return ""
+    plan = getattr(entry, "diagnostic_plan", None)
+    if not plan:
+        return ""
+    try:
+        from .repair_plateau_detector import (
+            build_probe_verdict_block,
+            read_back_probe_verdicts,
+        )
+        result = getattr(entry, "current_result", None)
+        readback = read_back_probe_verdicts(
+            plan,
+            satisfied=getattr(result, "satisfied_predicates", None) or [],
+            unsatisfied=getattr(result, "unsatisfied_predicates", None) or [],
+        )
+        return build_probe_verdict_block(readback)
+    except Exception:
+        return ""
+
+
 def derive_outcome_classification(
     has_syntax_errors: bool,
     resolved_target_issue: Optional[bool],
     has_previous_iteration: bool,
     current_issue: Optional[str] = None,
+    kind: str = "repair",
 ) -> str:
     """
     Deterministically classify an iteration's outcome from verification facts.
@@ -1377,7 +1566,20 @@ def derive_outcome_classification(
         "unintended_regression: ..."  - prior issue resolved but a new syntax error appeared
         "expected_improvement: ..."   - the targeted issue was resolved
         "unclassified: ..."           - no prior issue comparison was possible
+        "diagnostic_measurement: ..." - RE Mode 3: probes were added to measure,
+                                       no fix was attempted, so "did it improve?"
+                                       has no answer. Without this the entry falls
+                                       through to "unclassified", which reads as a
+                                       failure to classify rather than as nothing
+                                       to classify.
     """
+    if kind == "diagnostic":
+        if has_syntax_errors:
+            return ("diagnostic_measurement: probes added but the model does not "
+                    "parse; no verdicts were produced")
+        return ("diagnostic_measurement: probes added to measure a hypothesis; "
+                "no fix attempted, so no improvement or regression is implied")
+
     if not has_previous_iteration:
         if has_syntax_errors:
             return "initial_verification: initial model does not parse"
@@ -2014,8 +2216,10 @@ def parse_re_response_for_regression(response: str) -> Dict[str, Any]:
     Parse RE agent response to extract regression tracking fields.
 
     Extracts:
-    - fix_intent
+    - fix_intent (on a Mode 3 diagnostic iteration, filled from DIAGNOSTIC
+      EXECUTION with a "DIAGNOSTIC EXECUTION: " prefix - never left blank)
     - source_ref
+    - diagnostic_execution (the raw Mode 3 report, "" otherwise)
     - expected_impact (ImpactAnalysis)
 
     Args:
@@ -2029,6 +2233,7 @@ def parse_re_response_for_regression(response: str) -> Dict[str, Any]:
     result = {
         "fix_intent": "",
         "source_ref": "",
+        "diagnostic_execution": "",
         "expected_impact": ImpactAnalysis()
     }
 
@@ -2040,6 +2245,28 @@ def parse_re_response_for_regression(response: str) -> Dict[str, Any]:
     )
     if fix_intent_match:
         result["fix_intent"] = fix_intent_match.group(1).strip()
+
+    # Extract DIAGNOSTIC EXECUTION (RE Mode 3). It REPLACES FIX INTENT on a
+    # diagnostic iteration, so without this the entry ships with an empty
+    # fix_intent - and an empty field erases the iteration from every view built
+    # on it (failed-fix history, the Evaluator's regression log rendering, the
+    # similarity clustering). The prefix is what marks the entry as a measurement
+    # when it is read back; RegressionLogEntry.kind is what filters it.
+    diagnostic_match = re.search(
+        r'===\s*DIAGNOSTIC EXECUTION\s*===\s*\n(.*?)(?=\n===|```|$)',
+        response,
+        re.DOTALL | re.IGNORECASE
+    )
+    if diagnostic_match:
+        report = diagnostic_match.group(1).strip()
+        if report:
+            result["diagnostic_execution"] = report
+            if not result["fix_intent"]:
+                # Collapsed to one line: fix_intent is rendered inline in several
+                # prompt views, and a multi-line value breaks their "Fix Intent: x"
+                # shape.
+                summary = " ".join(line.strip() for line in report.splitlines() if line.strip())
+                result["fix_intent"] = f"DIAGNOSTIC EXECUTION: {summary}"
 
     # Extract SOURCE REFERENCE
     source_ref_match = re.search(

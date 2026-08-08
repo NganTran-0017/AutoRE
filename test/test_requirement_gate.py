@@ -7,9 +7,11 @@ Run: python test/test_requirement_gate.py   (from the repo root)
 
 import sys
 from pathlib import Path
+from unittest.mock import Mock
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.workflow import AutoREWorkflow
 from src.utils.repair_plateau_detector import (
     classify_gate_decision,
     remove_requirement_updates,
@@ -146,10 +148,73 @@ def test_build_regeneration_escalation_edited():
     print("PASS test_build_regeneration_escalation_edited")
 
 
+def _make_gate_workflow():
+    """Minimal workflow instance for exercising _apply_requirement_gate."""
+    wf = AutoREWorkflow.__new__(AutoREWorkflow)
+    wf.logger = Mock()
+    wf.context = Mock()
+    wf.context.iteration = Mock()
+    wf.context.iteration.current = 12
+    wf.context.qa_database = Mock()
+    wf.context.regression_log = Mock()
+    return wf
+
+
+def test_gate_non_escalated_accept_records_but_no_regeneration():
+    """
+    On a NON-escalated iteration (escalated_issues empty) the gate must record
+    the user's accept as a confirmed Q&A but must NOT store a REGENERATE_PREDICATES
+    escalation - the updates are applied via the normal patch in Step 7.
+    """
+    wf = _make_gate_workflow()
+    entry = Mock()
+    entry.repair_escalation = None
+    non_escalated = {"escalation_level": 0, "escalated_issues": [], "strategy": None}
+
+    out = wf._apply_requirement_gate(
+        feedback=FEEDBACK,
+        gate_decision="accepted",
+        proposed_updates="R2: Jobs may be pending at initialization.",
+        semantic_escalation=non_escalated,
+        current_entry=entry,
+        qa_index=1,
+    )
+
+    # Feedback returned unchanged - Step 7 still applies the updates.
+    assert out == FEEDBACK
+    # Decision recorded as a confirmed Q&A.
+    wf.context.qa_database.add_record.assert_called_once()
+    # No regeneration escalation stamped on the entry.
+    assert entry.repair_escalation is None
+    print("PASS test_gate_non_escalated_accept_records_but_no_regeneration")
+
+
+def test_gate_non_escalated_reject_strips_updates():
+    """A bare reject on a non-escalated iteration still strips REQUIREMENT UPDATES."""
+    wf = _make_gate_workflow()
+    non_escalated = {"escalation_level": 0, "escalated_issues": [], "strategy": None}
+
+    out = wf._apply_requirement_gate(
+        feedback=FEEDBACK,
+        gate_decision="rejected",
+        proposed_updates="R2: Jobs may be pending at initialization.",
+        semantic_escalation=non_escalated,
+        current_entry=None,
+        qa_index=1,
+    )
+
+    assert "=== REQUIREMENT UPDATES ===" not in out
+    assert "Jobs may be pending at initialization" not in out
+    wf.context.qa_database.add_record.assert_called_once()
+    print("PASS test_gate_non_escalated_reject_strips_updates")
+
+
 if __name__ == "__main__":
     test_classify_gate_decision()
     test_remove_requirement_updates()
     test_build_regeneration_escalation_with_diagnostics()
     test_build_regeneration_escalation_without_diagnostics()
     test_build_regeneration_escalation_edited()
+    test_gate_non_escalated_accept_records_but_no_regeneration()
+    test_gate_non_escalated_reject_strips_updates()
     print("\nAll requirement-gate tests passed.")

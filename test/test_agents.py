@@ -7,7 +7,7 @@ from src.agents.requirement_engineer import RequirementEngineerRole
 from src.agents.evaluator import EvaluatorRole
 
 
-async def test_agents():
+async def _impl_agents():
     """Test creating agents with shared context."""
 
     print("=" * 80)
@@ -105,5 +105,10 @@ async def test_agents():
     print(f"  - Prompt rendering: Working")
 
 
+def test_agents():
+    """Sync pytest entrypoint (repo convention: asyncio.run inside a sync test)."""
+    asyncio.run(_impl_agents())
+
+
 if __name__ == "__main__":
-    asyncio.run(test_agents())
+    asyncio.run(_impl_agents())

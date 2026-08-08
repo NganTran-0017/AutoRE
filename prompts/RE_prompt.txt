@@ -77,7 +77,7 @@ Create a formal Alloy 6 model from the requirements document.
 1. Translate requirements into formal Alloy 6 model at abstract level.
 2. Model existing system only to extent needed for verification context.
 3. Model all prospective behaviors, properties, and interactions.
-4. Use facts for existing system assumptions, structural rules, and enforced semantics. Do not encode a requirement as a fact unless it is intentionally assumed to be true at all time.
+4. Use facts ONLY for existing-system assumptions, structural rules, and enforced semantics. Do NOT encode a prospective requirement or an unverified assumption as a fact (see MODELING DISCIPLINE under Facts below).
 5. Use predicates for operations, scenarios, transitions, and edge cases.
 6. Use assertions for properties to verify.
 7. Keep model abstract, syntactically valid, focused on verifying the prospective behaviors and properties.
@@ -89,10 +89,12 @@ The model must be syntactically valid Alloy 6.
 1. Signatures: Clear names, careful multiplicities (one/lone/some/set)
 
 2. Facts: Encode existing-system assumptions, baseline rules, structural constraints
+   - MODELING DISCIPLINE (binding): facts hold ONLY the existing system's requirements and assumptions that must always hold. Prospective requirements are modeled as predicates (R1, R1R2, ..., All_Requirements) and assertions, and are NEVER promoted to facts during verification - even when feedback says to "enforce" or "strictly require" them: strengthen the requirement's PREDICATE (or ASSERTION) instead. Any assumption YOU introduce is modeled as a SEPARATE predicate named A1, A2, A3, ... (each with its own `run`), NOT as a fact, because it may conflict with the model in ways not foreseen before verification. A fact applies globally, so one inconsistent unverified constraint in a fact makes the ENTIRE model - including `baseline` - UNSAT and destroys diagnosability. An assumption predicate A_k is promoted to `fact A_k` automatically only after it verifies SAT for at least 2 consecutive iterations; never hand-promote an assumption earlier, and never promote a prospective requirement at all.
 
 3. Predicates: Define scenarios and transitions, verify with `run`
-   - Create an empty `baseline` predicate to verify the existing system requirements (which are modeled as facts)
+   - Create an empty `baseline` predicate to verify the existing system requirements (which are modeled as facts). `baseline` checks the EXISTING system only - it must never contain or be constrained by any prospective requirement or unverified assumption.
    - Name prospective requirement predicates incrementally: R1, R1R2, R1R2R3, etc.
+   - Name user-introduced assumption predicates A1, A2, A3, ... - kept SEPARATE from R* so they can be verified independently and, after 2 consecutive SAT iterations, auto-promoted to facts. Add a `run` for each (place after `run baseline`).
    - Name most comprehensive predicate: All_Requirements (contains all prospective requirements R1+R2+R3+...)
    - Run commands MUST follow this order:
      1. `run baseline` - verify existing system (facts) alone is satisfiable
@@ -105,6 +107,10 @@ The model must be syntactically valid Alloy 6.
 
 5. Best Practices:
    - Prefix with requirement IDs (e.g., fact R1R2, pred R3, assert assertR4)
+   - Every fact must declare the requirement it encodes: carry the ID in its name, or put `//@req <IDs>` on its declaration line (R# for emergency-module, E# for existing-system requirements; comma-separate multiple). A fact constrains every run, so an undeclared one, or one naming a requirement that no longer exists, is treated as stale.
+   - Assertions and run-invoked predicates should declare theirs the same way; an exploratory or edge-case check that encodes no requirement is valid - mark it `//@req none:probe`.
+   - Helper functions and predicates need no declaration - ownership is derived from the constructs that call them.
+   - Other constructs that deliberately encode no requirement: `//@req none:frame` (well-formedness) or `//@req none:harness` (scope/universe setup).
    - Use Alloy 6 temporal modeling for time/state (var for mutable properties)
    - Place all `open` statements at top
    - Verify incrementally with predicates
@@ -143,10 +149,11 @@ Model STRUCTURE, BEHAVIOR, and CONSTRAINTS, not implementation.
 1. Signatures: Clear names, careful multiplicities (one/lone/some/set)
 
 2. Facts: Encode existing-system assumptions, baseline rules, structural constraints
-   - MODELING DISCIPLINE (binding): facts are ONLY for existing-system requirements and assumptions that must always hold. Prospective requirements under verification MUST stay in predicates (R1, R1R2, ..., All_Requirements). NEVER move or encode a prospective requirement into a fact - even when feedback says to "enforce", "strengthen", or "strictly require" it: strengthen the requirement's PREDICATE instead. A fact applies globally, so one inconsistent unverified requirement in a fact makes the ENTIRE model - including `baseline` - UNSAT. Only promote a requirement into a fact after it is verified AND the user explicitly confirms it must always hold.
+   - MODELING DISCIPLINE (binding): facts hold ONLY the existing system's requirements and assumptions that must always hold. Prospective requirements under verification MUST stay in predicates (R1, R1R2, ..., All_Requirements) and assertions, and are NEVER promoted to facts - even when feedback says to "enforce", "strengthen", or "strictly require" it: strengthen the requirement's PREDICATE (or ASSERTION) instead. Any assumption you or the feedback introduces is modeled as a SEPARATE predicate named A1, A2, A3, ... (each with its own `run`), NOT as a fact, because it may conflict with the model in ways not foreseen before verification. A fact applies globally, so one inconsistent unverified constraint in a fact makes the ENTIRE model - including `baseline` - UNSAT and destroys diagnosability. An assumption predicate A_k is promoted to `fact A_k` automatically only after it verifies SAT for at least 2 consecutive iterations (the promotion directive, when due, is supplied to you); never hand-promote an assumption earlier, and never promote a prospective requirement at all.
 
 3. Predicates: Define scenarios and transitions, verify with `run`
-   - Create an empty `baseline` predicate to verify the existing system requirements (which are modeled as facts)
+   - Create an empty `baseline` predicate to verify the existing system requirements (which are modeled as facts). `baseline` checks the EXISTING system only - it must never contain or be constrained by any prospective requirement or unverified assumption.
+   - Name user-introduced assumption predicates A1, A2, A3, ... - kept SEPARATE from R* so they can be verified independently and, after 2 consecutive SAT iterations, auto-promoted to facts. Add a `run` for each (place after `run baseline`).
    - Name prospective requirement predicates incrementally: R1, R1R2, R1R2R3, etc.
    - Name most comprehensive predicate: All_Requirements (contains all prospective requirements R1+R2+R3+...)
    - Run commands MUST follow this order:
@@ -158,8 +165,13 @@ Model STRUCTURE, BEHAVIOR, and CONSTRAINTS, not implementation.
 4. Assertions: State properties to verify, check with `check`
    - Name assertions with a prefix `assert[name]`
 
+
 5. Best Practices:
    - Prefix with requirement IDs (e.g., fact R1R2, pred R3, assert assertR4)
+   - Every fact must declare the requirement it encodes: carry the ID in its name, or put `//@req <IDs>` on its declaration line (R# for emergency-module, E# for existing-system requirements; comma-separate multiple). A fact constrains every run, so an undeclared one, or one naming a requirement that no longer exists, is treated as stale.
+   - Assertions and run-invoked predicates should declare theirs the same way; an exploratory or edge-case check that encodes no requirement is valid - mark it `//@req none:probe`.
+   - Helper functions and predicates need no declaration - ownership is derived from the constructs that call them.
+   - Other constructs that deliberately encode no requirement: `//@req none:frame` (well-formedness) or `//@req none:harness` (scope/universe setup).
    - Use Alloy 6 temporal modeling for time/state (var for mutable properties)
    - Place all`open` statements at top
    - Verify incrementally with predicates
@@ -184,10 +196,24 @@ Model STRUCTURE, BEHAVIOR, and CONSTRAINTS, not implementation.
 **Cross-Iteration Escalation Status (deterministic tracking):**
 {{escalation_directive}}
 
+**Assumption Fact-Promotion Status (deterministic tracking):**
+{{promotion_directive}}
+
 {{lessons}}
 
 **Modeling Conventions (binding encoding decisions for THIS model - obey all):**
 {{modeling_conventions}}
+
+**Retracting a convention (ONLY when this fix moves the model off it):**
+Retract a convention only if the change you are making now stops relying on it -
+never as a standalone "this rule is wrong" judgment (to just correct a convention,
+re-emit it as a new `[CONVENTION]:` instead). Format:
+`[CONVENTION_RETRACT]: <quote enough of the convention to identify it> || <how this fix drops it>`
+- Quote its wording, NOT its list number (numbering changes every iteration).
+- To replace one, retract it AND add the corrected `[CONVENTION]:` in the same response.
+- Takes effect only if this fix resolves the issue; otherwise the convention stays.
+- Example:
+  `[CONVENTION_RETRACT]: Use StateOrder/indexOf directly in constraints, not via a wrapper function || this fix introduces a helper predicate instead.`
 
 [SECTION: UpdateAlloyModel_Mode1_SyntaxRepair]
 ### TASK: SYNTAX-ONLY MODEL REPAIR
@@ -267,9 +293,79 @@ Improve the model's behavior and correctness based on Evaluator feedback.
 
 **ESCALATION OVERRIDE (read the Cross-Iteration Escalation Status above):**
 - If STRATEGY is REGENERATE_PREDICATES, the user has approved (or provisionally accepted) requirement updates for persistent issues. For each construct listed under REGENERATE: DELETE the predicate/fact entirely and write a replacement derived from the UPDATED requirements document - NOT from the old construct text (it has resisted repeated repair and is not a usable starting point). Preserve each construct's name and parameters unless the Evaluator feedback says otherwise; if an interface must change, update every construct that references it. The focused-change constraint is lifted for the listed constructs and their call sites only - everything else stays unchanged. If IMPLICATED REQUIREMENTS are listed, the regenerated constructs must encode exactly those requirements as now worded.
+- If STRATEGY is REMOVE_STALE_CONSTRUCTS, DELETE every listed construct entirely - do not rewrite, weaken, or convert it to an assertion. Their requirements no longer exist, so there is no text to rebuild them from. Do not delete anything listed as STILL REFERENCED; remove its references first. After deleting, verify no remaining construct references a deleted name.
+- If STRATEGY is ENCODE_PROVISIONAL, a requirement update is on probation but nothing in the model can be traced to it, so verification can never decide it. This is a TRACEABILITY obligation, NOT a repair: the model may be entirely correct, so change nothing that works. For each requirement listed under BUILD, write a construct that encodes it (per the MODELING DISCIPLINE - a prospective R# becomes a predicate/assertion with its own run/check, never a fact) and make it traceable by carrying the ID in the construct's name or by `//@req <ID>` on its declaration line. For each requirement listed under LABEL ONLY, a construct that encodes it almost certainly already exists among the listed candidates - add the `//@req <ID>` comment to that one and change nothing else; do NOT build a second construct for it. If a listed requirement genuinely cannot be encoded as written, say so and name precisely what is ambiguous or unmodelable about it, rather than emitting a construct that does not encode it.
+- If STRATEGY is REVERT_REQUIREMENT, verification implicated a requirement update and the user undid it. The requirements document has ALREADY been changed back - your job is to make the model agree with it again, not to re-argue the requirement. For each construct listed under DELETE, remove it entirely (with any helper it alone used): its requirement is gone from the document, so there is nothing to rebuild it from and a weakened version would encode a requirement that no longer exists. For each construct listed under REGENERATE, delete it and rewrite it from the requirement text quoted in the directive, which is the wording now in force - do not patch the existing construct, and do not preserve any part of it that only made sense under the withdrawn wording. Change nothing else: the failure being addressed was in the requirement, not in the rest of the model.
 
 **Latest Requirements:**
 {{requirements_document}}
+
+
+[SECTION: UpdateAlloyModel_Mode3_Diagnostic]
+### TASK: DIAGNOSTIC EXPERIMENTS
+
+This iteration is a MEASUREMENT, not a repair. Its deliverable is evidence about which
+construct causes the failure - not a better model. The Evaluator chose it because it cannot
+tell which of several constructs is responsible, and a run would tell it.
+
+Work ONLY from the `=== DIAGNOSTIC PLAN ===` section of the feedback, plus any experiments
+re-issued under `STRATEGY: RERUN_DIAGNOSTIC_PROBES` in the Cross-Iteration Escalation Status
+above (those were ordered last iteration and produced no probe; they belong to this
+iteration's plan and continue its numbering). Every item has a construct, a hypothesis, and a
+reading declared BEFORE the run. Do not invent experiments, and do not act on the
+`=== DIAGNOSTIC CANDIDATES ===` section - those were not adopted.
+
+**How to express an experiment - as a probe, never as an edit:**
+1. For each plan item, ADD a predicate named `probe<N>_<Target>` (N = the item's position in
+   the plan) that restates the failing scenario with the hypothesised constraint altered -
+   relaxed, removed, or replaced - exactly as the hypothesis describes.
+2. Mark it `//@req none:probe` on its declaration line, and give it its own `run` command at
+   the same scope as the scenario it mirrors. That run command IS the experiment: its
+   SAT/UNSAT verdict is the measurement, so you record nothing yourself.
+3. One hypothesis per probe. Two altered constraints in one probe cannot be told apart, which
+   is the failure this mode exists to prevent.
+4. A probe is reachable ONLY from its own `run`. Never call it from another predicate, never
+   add it to `All_Requirements`, never reference it in an assertion or an R-chain.
+
+Alloy cannot parameterise over predicates, so a probe duplicates the scenario body. That is
+accepted: probes live exactly one iteration and are deleted next iteration.
+
+**Forbidden - these turn a measurement into an undeclared repair:**
+- **DO NOT modify ANY existing construct.** Not the ones named in the plan, not their
+  helpers, not a scope, not a run command. The production model changes ONLY by addition. A
+  construct carrying `//@req R#` or `//@req E#` encodes a requirement; altering it makes the
+  next verification measure a model nobody approved, and its ownership annotation becomes a
+  lie.
+- **DO NOT delete anything**, including constructs you believe are the cause. Deleting is the
+  repair the experiment is meant to justify, not the experiment.
+- **DO NOT fix the failing scenario**, even if the cause looks obvious while you write the
+  probe. Say so in your report instead; the Evaluator decides the repair once it has the
+  measurement.
+- **DO NOT run more than one experiment inside one probe**, and do not skip a plan item
+  because you expect its answer.
+
+**If a plan item cannot be executed** - the construct is not where the plan says, the
+hypothesis cannot be expressed as an additive probe, or two items would collide - write the
+probe you can and report the one you cannot, with a one-line reason. Reporting a skip is
+correct; silently omitting it is not, because an item that produces no verdict is
+indistinguishable from an experiment that returned UNSAT.
+
+**Items already answered:** the `=== DIAGNOSTIC ITEMS NOT RUN (already measured) ===` block,
+when present in the Cross-Iteration Escalation Status above, lists plan items the workflow
+removed because the deterministic diagnosis has already measured them. Do NOT write probes
+for those. Copy each into your report as `Executed: no` with the reason given, so the
+Evaluator receives the measured status rather than silence.
+
+
+[SECTION: ResponseFormatDiagnosticExecution]
+=== DIAGNOSTIC EXECUTION ===
+[One entry for EVERY item in the DIAGNOSTIC PLAN, plus every item listed under DIAGNOSTIC
+ITEMS NOT RUN. No omissions - an item missing from this report is indistinguishable from an
+experiment that ran and failed.]
+- Experiment: [the plan item restated: construct, hypothesis, and the declared reading]
+- Probe: [the predicate you added, e.g. probe1_ScenarioMultiEmgA, or "none"]
+- Executed: [yes / no]
+- Reason: [one line - required when Executed is no; omit when yes]
 
 
 [SECTION: ResponseFormatRequirements]

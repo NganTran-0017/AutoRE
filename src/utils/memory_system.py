@@ -71,10 +71,15 @@ class LongTermMemorySystem:
         agent: str,
         action: str,
         iteration: int,
-        metadata: Optional[Dict] = None
+        metadata: Optional[Dict] = None,
+        verified: bool = False
     ):
         """
         Store item with full tagging.
+
+        `verified` is accepted and ignored: this backend has no semantic dedup,
+        so there is no contradiction detection for it to gate. It exists so
+        callers can use one signature for either backend.
 
         Args:
             content: The actual content to remember

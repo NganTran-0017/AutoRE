@@ -16,16 +16,21 @@ Model verified successfully.
 === ALLOY_MODEL_IMPROVEMENTS ===
 Consider adding more assertions.
 
-=== REQUIREMENT_UPDATES ===
-The login timeout requirement is ambiguous. Should specify exact timeout value.
+=== REQUIREMENT UPDATES ===
+- Affected Requirement/Assumption/Constraint: R2
+- Classification: requirement
+- Target kind & placement: sub-requirement R2.1 under R2
+- Coverage check: checked R1-R3; none specify a timeout value
+- Issue Type: ambiguity
+- Recommended Update: specify an exact login timeout value
 
-=== USER QUESTIONS ===
+=== UPDATED USER QUESTIONS ===
 None
 """
 
     result = workflow._extract_requirement_updates(feedback)
     assert result is not None
-    assert "login timeout requirement is ambiguous" in result
+    assert "specify an exact login timeout value" in result
 
 
 def test_extract_requirement_updates_empty():
@@ -39,7 +44,7 @@ Model verified successfully.
 === ALLOY_MODEL_IMPROVEMENTS ===
 Consider adding more assertions.
 
-=== REQUIREMENT_UPDATES ===
+=== REQUIREMENT UPDATES ===
 
 === USER QUESTIONS ===
 None
@@ -60,7 +65,7 @@ Model verified successfully.
 === ALLOY_MODEL_IMPROVEMENTS ===
 Consider adding more assertions.
 
-=== REQUIREMENT_UPDATES ===
+=== REQUIREMENT UPDATES ===
 None
 
 === USER QUESTIONS ===
@@ -79,7 +84,7 @@ def test_extract_requirement_updates_placeholder():
 === VERIFICATION STATUS ===
 Model verified successfully.
 
-=== REQUIREMENT_UPDATES ===
+=== REQUIREMENT UPDATES ===
 [Ambiguities/inconsistencies/missing items]
 
 === USER QUESTIONS ===
@@ -98,7 +103,7 @@ def test_extract_requirement_updates_not_applicable():
 === VERIFICATION STATUS ===
 Model verified successfully.
 
-=== REQUIREMENT_UPDATES ===
+=== REQUIREMENT UPDATES ===
 N/A
 
 === USER QUESTIONS ===

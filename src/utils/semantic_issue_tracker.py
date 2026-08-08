@@ -77,6 +77,7 @@ class SemanticIssueTracker(SafeLogMixin):
         current_iteration: int,
         current_result: Any,
         regression_log_entries: List[Any],
+        current_is_diagnostic: bool = False,
     ) -> Dict[str, Any]:
         """
         Track persistence of the current iteration's semantic issues.
@@ -86,6 +87,11 @@ class SemanticIssueTracker(SafeLogMixin):
             current_result: The current iteration's VerificationResult
                 (must expose .syntax, .unsatisfied_predicates, .counterexamples).
             regression_log_entries: All regression-log entries.
+            current_is_diagnostic: True when this iteration ran RE Mode 3
+                (diagnostic experiments). A measurement attempted no repair, so
+                it is no evidence that repair is failing - it is skipped exactly
+                like a syntax-broken iteration, and diagnostic iterations in the
+                window are likewise not counted as measurable.
 
         Returns:
             The semantic_issue_persistence dict described in the module docstring.
@@ -101,9 +107,23 @@ class SemanticIssueTracker(SafeLogMixin):
             if current_result is None or getattr(current_result, "syntax", "") != "OK":
                 return result
 
+            # A diagnostic iteration attempted no repair. Counting it would make
+            # careful diagnosis climb the escalation ladder faster than doing
+            # nothing at all.
+            if current_is_diagnostic:
+                self._log(
+                    f"[SEMANTIC_ISSUE_TRACKER] iter={current_iteration} is a diagnostic "
+                    f"iteration - not counted toward persistence"
+                )
+                return result
+
+            from .semantic_diagnostics import is_probe_name
+
             current_issues = [
                 (name, UNSAT_PREDICATE)
                 for name in (getattr(current_result, "unsatisfied_predicates", None) or [])
+                # A probe's UNSAT is a completed experiment, not a stuck requirement.
+                if not is_probe_name(name)
             ] + [
                 (name, COUNTEREXAMPLE)
                 for name in (getattr(current_result, "counterexamples", None) or [])
@@ -118,6 +138,8 @@ class SemanticIssueTracker(SafeLogMixin):
                 it = getattr(entry, "iteration_id", None)
                 if it is None or it >= current_iteration or it < low:
                     continue
+                if getattr(entry, "kind", "repair") == "diagnostic":
+                    continue  # measured, not repaired - no evidence either way
                 res = getattr(entry, "current_result", None)
                 if res is not None and getattr(res, "syntax", "") == "OK":
                     measurable[it] = res

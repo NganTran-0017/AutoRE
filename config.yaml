@@ -44,9 +44,43 @@ agents:
 memory:
   semantic_deduplication:
     enabled: true
-    merge_threshold: 0.7    # sim in [merge_threshold, drop_threshold) -> merge new with existing
+    # In the merge band the MemoryAssistant classifies the pair BEFORE anything
+    # is written: SAME/COMPLEMENTARY fold into one row (the pre-merge wording is
+    # kept in `prior_text`, so the merge is revertible), CONTRADICTORY keeps both
+    # rows and suspends the older one until the outcome decides. The bands are
+    # per-collection because the collections are: lessons are scoped to one
+    # {agent, action}, conventions are model-wide.
+    merge_threshold: 0.7    # sim in [merge_threshold, drop_threshold) -> classify
     drop_threshold: 0.91    # sim >= drop_threshold -> drop new as duplicate
-    merge_similar_lessons: true  # Use MemoryAssistant to merge (for the merge band)
+    merge_similar_lessons: true  # false collapses the merge band to "drop"
+    lesson_mode: "active"   # "observe" = classify nothing, act on nothing, still log
+    # The convention floor is 0.78, not 0.7: calibrated on
+    # Output/ConventionDedup/shadow.jsonl, where every pair below ~0.78 was the
+    # same topic under a DIFFERENT rule (an eligibility condition vs an encoding
+    # style) and every pair above it was one rule restated or one rule
+    # superseding another - the two cases the classifier exists to separate.
+    convention_mode: "active"          # "observe" = log the band and verdict, act on nothing
+    convention_merge_threshold: 0.78   # sim in [merge, drop) -> classify
+    convention_drop_threshold: 0.93    # sim >= drop -> drop new as duplicate
+    # A CONTRADICTORY verdict suspends the older item pending an outcome. Most
+    # lesson store sites have no outcome to report, so the wait is BOUNDED: past
+    # this many iterations the older lesson is restored and both are injected
+    # again. Must exceed the lesson probation window (3), or the sweep would
+    # pre-empt the answer it is waiting for. Every decision - suspended,
+    # finalized, restored, expired - is written with BOTH texts to
+    # Output/LessonDedup/decisions.jsonl.
+    lesson_conflict_max_wait: 5
+
+# Requirement lifecycle settings
+requirements:
+  # Contradiction triage (bucket 6). A CONTRADICTS verdict is the Evaluator's
+  # reading of two pieces of English, not a solver finding - so neither mode
+  # acts on it. The update is applied and VERIFICATION settles whether the two
+  # requirements can coexist; the decision is asked then, with evidence.
+  # "observe" = record it to Output/RequirementConflict/shadow.jsonl, show
+  #             nothing | "active" = also flag the claim to the user and attach
+  #             it to the update, so a later contest can cite it
+  conflict_mode: "active"
 
 # Embedding model settings (for semantic similarity)
 embeddings:

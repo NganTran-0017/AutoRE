@@ -7,6 +7,34 @@ from .lesson_aware_action import LessonAwareAction
 from typing import Dict, Any
 
 
+_FIX_INTENT_HEADER = "=== FIX INTENT ==="
+_SOURCE_REFERENCE_HEADER = "=== SOURCE REFERENCE ==="
+
+
+def swap_fix_intent_for_diagnostic_execution(response_format: str, replacement: str) -> str:
+    """
+    Replace the FIX INTENT block of the shared model-update response format with
+    the DIAGNOSTIC EXECUTION block, for Mode 3.
+
+    Replacement rather than addition, for the same reason `select_binding_rules`
+    sends one rulebook: asking for both fields ships two contradicting
+    instructions ("state what you are fixing" / "this iteration fixes nothing")
+    and leaves the model to resolve them. It also keeps `fix_intent` from being
+    filled with a fix-shaped sentence on an iteration that repaired nothing.
+
+    Degrades safely: if either marker is missing (prompt drift), the block is
+    appended instead, so the field is never silently absent.
+    """
+    replacement = (replacement or "").strip()
+    if not replacement:
+        return response_format
+    start = response_format.find(_FIX_INTENT_HEADER)
+    end = response_format.find(_SOURCE_REFERENCE_HEADER)
+    if start == -1 or end == -1 or end < start:
+        return response_format.rstrip() + "\n\n" + replacement + "\n"
+    return response_format[:start] + replacement + "\n\n" + response_format[end:]
+
+
 class AnalyzeRequirements(LessonAwareAction):
     """
     Action to analyze initial requirements and produce requirements document.
@@ -141,7 +169,7 @@ class BuildAlloyModel(LessonAwareAction):
 
         # Render prompt
         prompt = self.render_prompt(
-            requirements_document=requirements_document,
+            requirements_document=self.annotate_requirements(requirements_document),
             user_feedback=user_feedback if user_feedback else "No user feedback yet.",
             lessons=lessons_str,
             modeling_conventions=conventions_str,
@@ -178,7 +206,8 @@ class UpdateAlloyModel(LessonAwareAction):
         evaluation_feedback: str,
         requirements_document: str,
         mode: str = "semantic",
-        escalation_directive: str = ""
+        escalation_directive: str = "",
+        promotion_directive: str = ""
     ) -> str:
         """
         Update Alloy model based on evaluator feedback.
@@ -191,13 +220,19 @@ class UpdateAlloyModel(LessonAwareAction):
             escalation_directive: Cross-iteration escalation evidence block from
                 the RepairPlateauDetector (forbidden prior fixes, oscillation
                 partner, rewrite-block requirement); empty when no escalation
+            promotion_directive: Deterministic assumption fact-promotion directive -
+                instructs the agent to promote an assumption predicate (A_k, SAT for
+                >=2 consecutive iterations) to `fact A_k`, or to revert a promotion
+                that broke `baseline`; empty when no action is due
 
         Returns:
             Updated Alloy model code
         """
         # Validate mode
-        if mode not in ["syntax", "semantic"]:
-            raise ValueError(f"Invalid mode: {mode}. Must be 'syntax' or 'semantic'")
+        if mode not in ["syntax", "semantic", "diagnostic"]:
+            raise ValueError(
+                f"Invalid mode: {mode}. Must be 'syntax', 'semantic' or 'diagnostic'"
+            )
 
         # Get lessons, ranked by semantic similarity to the evaluator's feedback
         lessons = self.get_lessons_for_context(context_query=evaluation_feedback, limit=5)
@@ -228,7 +263,8 @@ class UpdateAlloyModel(LessonAwareAction):
                 lessons_str=lessons_str,
                 conventions_str=conventions_str,
                 user_prefs=user_prefs,
-                escalation_directive=escalation_directive
+                escalation_directive=escalation_directive,
+                promotion_directive=promotion_directive
             )
             
             # Add retry warning for syntax mode if this is not the first attempt
@@ -426,7 +462,8 @@ class UpdateAlloyModel(LessonAwareAction):
         lessons_str: str,
         user_prefs: str,
         escalation_directive: str = "",
-        conventions_str: str = "No modeling conventions established yet."
+        conventions_str: str = "No modeling conventions established yet.",
+        promotion_directive: str = ""
     ) -> str:
         """
         Build prompt based on mode (syntax or semantic).
@@ -463,11 +500,23 @@ class UpdateAlloyModel(LessonAwareAction):
             # Mode 1: Syntax repair
             mode_section = prompt_manager.get_section(agent_name, "UpdateAlloyModel_Mode1_SyntaxRepair")
             sections.append(mode_section)
+        elif mode == "diagnostic":
+            # Mode 3: Diagnostic experiments. The iteration's deliverable is
+            # evidence, so the response reports what was executed instead of what
+            # was fixed - FIX INTENT is REPLACED, not supplemented, because that
+            # field feeds RegressionLogEntry.fix_intent and a fix-shaped sentence
+            # there is what lists an experiment as a failed fix forever after.
+            mode_section = prompt_manager.get_section(agent_name, "UpdateAlloyModel_Mode3_Diagnostic")
+            sections.append(mode_section)
+            response_format = swap_fix_intent_for_diagnostic_execution(
+                response_format,
+                prompt_manager.get_section(agent_name, "ResponseFormatDiagnosticExecution"),
+            )
         else:
             # Mode 2: Semantic repair
             mode_section = prompt_manager.get_section(agent_name, "UpdateAlloyModel_Mode2_SemanticRepair")
             sections.append(mode_section)
-        
+
         # Add shared sections (same for both modes)
         sections.extend([response_format, quality_standards, learning_instructions])
         
@@ -483,12 +532,19 @@ class UpdateAlloyModel(LessonAwareAction):
             "user_preferences": user_prefs,
             "escalation_directive": escalation_directive if escalation_directive and escalation_directive.strip() else (
                 "None - no cross-iteration escalation is active."
+            ),
+            "promotion_directive": promotion_directive if promotion_directive and promotion_directive.strip() else (
+                "None - no assumption fact-promotion is due."
             )
         }
         
-        # For semantic mode, include requirements document
+        # For semantic mode, include requirements document - annotated with each
+        # item's standing, so the RE can see which requirements are still on
+        # probation. It must encode them exactly as it encodes any other: that
+        # encoding is the evidence probation is decided on.
         if mode == "semantic":
-            variables["requirements_document"] = requirements_document
+            variables["requirements_document"] = self.annotate_requirements(
+                requirements_document)
         
         # Substitute variables
         rendered = prompt_manager._substitute_variables(template, variables)

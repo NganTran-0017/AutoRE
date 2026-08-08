@@ -686,8 +686,12 @@ class AlloyExecutor:
             if cmd_type == "run":
                 analysis["total_run_commands"] += 1
 
-                # Track positive run commands (exclude "negative" test cases)
-                is_negative = "negative" in cmd_name.lower()
+                # Track positive run commands (exclude "negative" test cases and
+                # Mode 3 diagnostic probes - a probe is a measurement, not a
+                # requirement, so its UNSAT is a completed experiment and must
+                # not hold convergence open the way an unsatisfied requirement does)
+                from .semantic_diagnostics import is_probe_name
+                is_negative = "negative" in cmd_name.lower() or is_probe_name(cmd_name)
                 if not is_negative:
                     analysis["positive_run_commands"] += 1
                     if cmd_info["result"] == "SAT":

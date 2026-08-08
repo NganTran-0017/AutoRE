@@ -31,7 +31,7 @@ Model verified successfully.
 === ALLOY_MODEL_IMPROVEMENTS ===
 Consider adding more assertions.
 
-=== REQUIREMENT_UPDATES ===
+=== REQUIREMENT UPDATES ===
 None
 
 === USER QUESTIONS ===
@@ -40,7 +40,7 @@ None
 
     workflow.context.artifacts.get_latest_feedback.return_value = feedback_no_updates
     workflow.context.artifacts.get_latest_requirements.return_value = current_requirements
-    workflow.context.file_manager.save_requirements.return_value = Path("Output/ReqsDoc/requirements_iter_2.md")
+    workflow.context.file_manager.get_latest_requirements_file.return_value = Path("Output/ReqsDoc/requirements_iter_1.md")
 
     # Mock the update_requirements action (should not be called)
     workflow.update_requirements = AsyncMock()
@@ -51,11 +51,10 @@ None
     # Verify that update_requirements was NOT called
     workflow.update_requirements.run.assert_not_called()
 
-    # Verify that save_requirements WAS called with the unchanged requirements
-    workflow.context.file_manager.save_requirements.assert_called_once_with(
-        current_requirements,
-        iteration=2
-    )
+    # Current behavior: when there are no updates, Step 7 reuses the existing
+    # requirements file and does NOT re-save.
+    workflow.context.file_manager.save_requirements.assert_not_called()
+    workflow.context.file_manager.get_latest_requirements_file.assert_called_once()
 
 
 def test_step7_with_requirement_updates():
@@ -81,11 +80,16 @@ Model has issues.
 === ALLOY_MODEL_IMPROVEMENTS ===
 Consider adding more assertions.
 
-=== REQUIREMENT_UPDATES ===
-The login timeout requirement is ambiguous. Should specify exact timeout value.
-Add constraint for maximum session duration.
+=== REQUIREMENT UPDATES ===
+- Affected Requirement/Assumption/Constraint: R2
+- Classification: requirement
+- Target kind & placement: sub-requirement R2.1 under R2
+- Coverage check: checked R1-R3; none specify a timeout value
+- Issue Type: ambiguity
+- Evidence: counterexample shows unbounded session duration
+- Recommended Update: specify an exact login timeout value
 
-=== USER QUESTIONS ===
+=== UPDATED USER QUESTIONS ===
 What should the timeout value be?
 """
 

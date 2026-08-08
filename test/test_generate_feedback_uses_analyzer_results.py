@@ -1,13 +1,13 @@
-"""Test that GenerateFeedback retrieves and uses code snippets from analyzer_results."""
+"""Test that GenerateSemanticFeedback retrieves and uses code snippets from analyzer_results."""
 
 import asyncio
 from src.utils.runtime_context import SharedRuntimeContext
-from src.actions.evaluation_actions import GenerateFeedback
+from src.actions.evaluation_actions import GenerateSemanticFeedback
 
-async def test_generate_feedback_with_syntax_errors():
-    """Test that GenerateFeedback retrieves code snippets from stored analyzer_results."""
+async def _impl_with_syntax_errors():
+    """Test that GenerateSemanticFeedback retrieves code snippets from stored analyzer_results."""
 
-    print("Testing GenerateFeedback Code Snippet Retrieval")
+    print("Testing GenerateSemanticFeedback Code Snippet Retrieval")
     print("=" * 80)
 
     # Create context
@@ -54,8 +54,8 @@ SATISFYING INSTANCES: N/A (syntax errors prevent verification)"""
     requirements = "Test requirements"
     full_model = "// Full Alloy model\n" + "sig Test {}\n" * 100  # Large model
 
-    # Create GenerateFeedback action
-    action = GenerateFeedback(context, agent_name="Evaluator")
+    # Create GenerateSemanticFeedback action
+    action = GenerateSemanticFeedback(context, agent_name="Evaluator")
 
     # Mock the _aask method to avoid actual LLM call
     async def mock_aask(prompt):
@@ -68,7 +68,7 @@ SATISFYING INSTANCES: N/A (syntax errors prevent verification)"""
     action._aask = mock_aask
 
     # Run the action
-    print("\nRunning GenerateFeedback...")
+    print("\nRunning GenerateSemanticFeedback...")
     result = await action.run(
         interpretation=interpretation,
         requirements_document=requirements,
@@ -79,19 +79,19 @@ SATISFYING INSTANCES: N/A (syntax errors prevent verification)"""
 
     # Verify the result
     if result == "Feedback with snippets":
-        print("\n✓✓✓ SUCCESS! GenerateFeedback correctly retrieved and used code snippets")
+        print("\n✓✓✓ SUCCESS! GenerateSemanticFeedback correctly retrieved and used code snippets")
         print("✓ Full model was replaced with focused code snippets")
         return True
     else:
-        print("\n✗✗✗ FAILED! GenerateFeedback did not use code snippets")
+        print("\n✗✗✗ FAILED! GenerateSemanticFeedback did not use code snippets")
         print("✗ Full model was used instead of snippets")
         return False
 
-async def test_generate_feedback_without_syntax_errors():
-    """Test that GenerateFeedback uses full model when there are no syntax errors."""
+async def _impl_without_syntax_errors():
+    """Test that GenerateSemanticFeedback uses full model when there are no syntax errors."""
 
     print("\n" + "=" * 80)
-    print("Testing GenerateFeedback Without Syntax Errors")
+    print("Testing GenerateSemanticFeedback Without Syntax Errors")
     print("=" * 80)
 
     # Create context
@@ -120,7 +120,7 @@ SATISFYING INSTANCES: Found meaningful instances"""
     full_model = "// Full Alloy model\nsig Test {}\n"
 
     # Create action
-    action = GenerateFeedback(context, agent_name="Evaluator")
+    action = GenerateSemanticFeedback(context, agent_name="Evaluator")
 
     # Mock the _aask method
     async def mock_aask(prompt):
@@ -132,7 +132,7 @@ SATISFYING INSTANCES: Found meaningful instances"""
     action._aask = mock_aask
 
     # Run the action
-    print("\nRunning GenerateFeedback...")
+    print("\nRunning GenerateSemanticFeedback...")
     result = await action.run(
         interpretation=interpretation,
         requirements_document=requirements,
@@ -143,16 +143,26 @@ SATISFYING INSTANCES: Found meaningful instances"""
 
     # Verify the result
     if result == "Feedback with full model":
-        print("\n✓✓✓ SUCCESS! GenerateFeedback correctly used full model")
+        print("\n✓✓✓ SUCCESS! GenerateSemanticFeedback correctly used full model")
         print("✓ No snippets extracted when no syntax errors")
         return True
     else:
-        print("\n✗✗✗ FAILED! GenerateFeedback unexpectedly used snippets")
+        print("\n✗✗✗ FAILED! GenerateSemanticFeedback unexpectedly used snippets")
         return False
 
+def test_generate_feedback_with_syntax_errors():
+    """Sync pytest entrypoint (repo convention: asyncio.run inside a sync test)."""
+    assert asyncio.run(_impl_with_syntax_errors())
+
+
+def test_generate_feedback_without_syntax_errors():
+    """Sync pytest entrypoint (repo convention: asyncio.run inside a sync test)."""
+    assert asyncio.run(_impl_without_syntax_errors())
+
+
 if __name__ == "__main__":
-    result1 = asyncio.run(test_generate_feedback_with_syntax_errors())
-    result2 = asyncio.run(test_generate_feedback_without_syntax_errors())
+    result1 = asyncio.run(_impl_with_syntax_errors())
+    result2 = asyncio.run(_impl_without_syntax_errors())
 
     print("\n" + "=" * 80)
     print("FINAL RESULTS:")
@@ -160,7 +170,7 @@ if __name__ == "__main__":
 
     if result1 and result2:
         print("✓✓✓ All tests passed!")
-        print("\nGenerateFeedback now correctly:")
+        print("\nGenerateSemanticFeedback now correctly:")
         print("  - Retrieves analyzer_results from artifact store")
         print("  - Extracts code snippets when syntax errors exist")
         print("  - Uses full model when no syntax errors")

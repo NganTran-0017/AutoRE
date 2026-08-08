@@ -109,12 +109,18 @@ class InterpretResults(LessonAwareAction):
             count=3
         )
 
+        # Which requirement each construct encodes, and what the workflow already
+        # deleted. Without it "map the blocker to a requirement" and "name the
+        # requirement this fact encodes" are answerable only by guessing at names.
+        ownership_str = self._format_ownership_context(alloy_model, requirements_document)
+
         # Render base prompt
         prompt = self.render_prompt(
             analyzer_results=results_str,
             requirements_document=requirements_document,
             alloy_model=model_context,  # Use placeholder or full model
             regression_log=regression_log_str,
+            ownership_audit=ownership_str,
             user_preferences=user_prefs
         )
 
@@ -156,6 +162,9 @@ class InterpretResults(LessonAwareAction):
                 "Evaluator",
                 "InterpretUNSATPred"
             )
+            # No ownership_audit substitution here: this section is appended to
+            # the base prompt, which already carries the block. Its step 3 refers
+            # to it rather than repeating it in the same request.
             prompt = prompt + "\n\n" + unsat_pred_section
 
         # Include InterpretCounterexample section when:
@@ -254,7 +263,10 @@ class InterpretResults(LessonAwareAction):
                 {
                     "analyzer_results": results_str,
                     "alloy_model": alloy_model,
-                    "requirements_document": requirements_document
+                    "requirements_document": requirements_document,
+                    # Reduce Assumptions asks which requirement each fact
+                    # encodes before recommending it be weakened.
+                    "ownership_audit": ownership_str
                 }
             )
 
@@ -297,6 +309,41 @@ class InterpretResults(LessonAwareAction):
         self.get_artifacts().store_evaluation(iteration, cleaned_response)
 
         return cleaned_response
+
+    def _format_ownership_context(self, alloy_model: str, requirements_document: str) -> str:
+        """Ownership audit + deliberate-removal history, as one prompt block.
+
+        The audit is normally computed at the end of the previous step 8, but it
+        is absent on the first iteration and after a resume (the context is
+        rebuilt from disk). It is a deterministic text parse, so recompute it
+        here rather than leave the Evaluator to guess ownership from names.
+
+        Best-effort: supplying context must never break the interpretation.
+        """
+        try:
+            from ..utils.traceability_store import audit_model, format_ownership_for_prompt
+
+            audit = getattr(self.context, "ownership_audit", None)
+            if not audit and alloy_model:
+                audit = audit_model(alloy_model, requirements_document)
+
+            removal_log = getattr(self.context, "construct_removal_log", None)
+            removals = removal_log.format_for_prompt() if removal_log else None
+
+            # From the previous iteration's localization - it runs after this
+            # action, so the current iteration's own join is not available yet.
+            blockers = getattr(self.context, "unowned_blockers", None)
+            if not isinstance(blockers, dict):
+                blockers = {}
+            streaks = getattr(self.context, "unowned_blocker_streaks", None)
+            if not isinstance(streaks, dict):
+                streaks = {}
+
+            return format_ownership_for_prompt(audit, removals=removals,
+                                               blockers=blockers, streaks=streaks)
+        except Exception as e:
+            self._debug(f"[DEBUG] ownership context unavailable: {e}")
+            return "OWNERSHIP AUDIT: unavailable for this iteration."
 
     def _check_unsat_stuck(self, current_analysis: Dict[str, Any], consecutive_iterations: int = 2) -> bool:
         """
@@ -790,14 +837,30 @@ class GenerateSemanticFeedback(LessonAwareAction):
         # RepairPlateauDetector requires requirements diagnosis (semantic
         # issues survived repeated repair attempts)
         if persistence_status and persistence_status.strip():
+            from ..utils.repair_plateau_detector import select_binding_rules
+
             escalation_section = self.context.prompt_manager.get_section(
                 "Evaluator",
                 "PersistentIssueEscalation"
+            )
+            # The evidence gate already chose between the two opposed rulebooks
+            # this section carries; send only that one. Substitute afterwards -
+            # the STRATEGY line is read off the directive, not the filled text.
+            escalation_section = select_binding_rules(
+                escalation_section, persistence_status
             )
             escalation_section = escalation_section.replace(
                 "{{persistence_status}}", persistence_status
             )
             prompt = prompt + "\n\n" + escalation_section
+
+        # Append the shared triage decision procedure so any verification-driven
+        # requirement/constraint change is deduped, placed, and classified before
+        # it lands in REQUIREMENT UPDATES.
+        triage_section = self.context.prompt_manager.get_section(
+            "Evaluator", "RequirementChangeTriage"
+        )
+        prompt = prompt + "\n\n" + triage_section
 
         # Call LLM
         response = await self._aask(prompt)
@@ -854,8 +917,18 @@ class UpdateRequirements(LessonAwareAction):
 
         original = self.get_artifacts().get_original_requirements()
         protected_ids = rs.parse_original_requirement_ids(original)
-        doc = rs.parse_requirements_document(requirements_document)
-        annotated = rs.annotate_for_prompt(doc)
+        # Existing-system items are protected too, but by TEXT: their E-numbers
+        # are positional, so an ID captured once stops denoting the same bullet
+        # as soon as one is inserted above it. The baseline is the iteration-0
+        # document - the first derivation of the user's system description -
+        # falling back to the current one, which over-protects rather than
+        # under-protects when that artifact is unavailable.
+        baseline = (self.get_artifacts().get_requirements(0)
+                    or requirements_document)
+        protected_texts = rs.existing_system_texts(baseline)
+        statuses = getattr(self.context, "requirement_status", None)
+        annotated = self.annotate_requirements(requirements_document,
+                                               addressing_markers=True)
 
         # Render prompt
         prompt = self.render_prompt(
@@ -871,11 +944,18 @@ class UpdateRequirements(LessonAwareAction):
         )
 
         # Call LLM and apply the patch; one retry on an unusable patch.
+        # Removals are deferred while the status store exists: the item stays in
+        # the document (marked) until the model has been verified without its
+        # encoding for the full probation window.
+        defer = statuses is not None
         response = await self._aask(prompt)
-        result = rs.apply_patch(requirements_document, response, protected_ids)
+        result = rs.apply_patch(requirements_document, response, protected_ids,
+                                defer_removals=defer,
+                                protected_texts=protected_texts)
 
         retried = False
-        if not result["changed"] and not result["no_change"] and result["errors"]:
+        if not result["changed"] and not result["no_change"] and result["errors"] \
+                and not result["applied"]:
             self._debug(f"[REQ_PATCH] retry - patch not applicable: {result['errors']}")
             retry_prompt = (
                 prompt
@@ -885,7 +965,9 @@ class UpdateRequirements(LessonAwareAction):
                   "using the item IDs exactly as shown in the current document."
             )
             response = await self._aask(retry_prompt)
-            result = rs.apply_patch(requirements_document, response, protected_ids)
+            result = rs.apply_patch(requirements_document, response, protected_ids,
+                                    defer_removals=defer,
+                                    protected_texts=protected_texts)
             retried = True
 
         for entry in result["blocked"]:
@@ -900,6 +982,9 @@ class UpdateRequirements(LessonAwareAction):
             print("  ✏️  Requirement patch: no changes needed")
         else:
             print("  ⚠️  Requirement patch could not be applied - document unchanged")
+        if result.get("deferred"):
+            print(f"  ⏳ Removal deferred pending verification: "
+                  f"{', '.join(result['deferred'])}")
 
         updated = result["text"]
 
@@ -907,12 +992,38 @@ class UpdateRequirements(LessonAwareAction):
         iteration = self.get_current_iteration()
         self.get_artifacts().store_requirements(iteration, updated)
 
+        # Every applied operation goes on probation - ADD, MODIFY and REMOVE
+        # alike, confirmed or not. Confirming WORDING is not confirming
+        # consistency with the rest of the document.
+        self._record_requirement_status(iteration, result)
+
         # Record a structured audit entry of every patch operation (applied,
         # blocked, errored) so requirement changes are queryable independent of
         # the resulting document and the free-text session log.
         self._record_patch_audit(iteration, response, result, retried)
 
         return updated
+
+    def _record_requirement_status(self, iteration, result):
+        """Put every applied op on probation (best-effort; never break updates)."""
+        statuses = getattr(self.context, "requirement_status", None)
+        if statuses is None:
+            return
+        try:
+            provenance = getattr(self.context, "requirement_gate_decision", "") or "triage"
+            recorded = statuses.record_changes(
+                result.get("changes", []), iteration, provenance=provenance)
+            if recorded:
+                self._debug(
+                    "[REQ_STATUS] on probation: "
+                    + ", ".join(f"{e.req_id}({e.status})" for e in recorded)
+                )
+                from ..utils.requirement_status_store import PROBATION_ITERATIONS
+                print(f"  🕒 On probation ({PROBATION_ITERATIONS} verified "
+                      f"iterations needed): "
+                      f"{', '.join(e.req_id for e in recorded)}")
+        except Exception as e:
+            self._debug(f"[REQ_STATUS] recording failed (non-fatal): {e}")
 
     def _record_patch_audit(self, iteration, response, result, retried):
         """Append a structured entry to the requirement patch log (best-effort;
@@ -935,6 +1046,7 @@ class UpdateRequirements(LessonAwareAction):
                 raw_response=response or "",
                 ops_requested=ops_requested,
                 applied=list(result.get("applied", [])),
+                changes=list(result.get("changes", [])),
                 blocked=list(result.get("blocked", [])),
                 errors=list(result.get("errors", [])),
                 no_change=bool(result.get("no_change", False)),
@@ -1088,7 +1200,8 @@ class RefineFeedback(LessonAwareAction):
     async def run(
         self,
         draft_feedback: str,
-        user_review: str
+        user_review: str,
+        requirements_document: str = ""
     ) -> str:
         """
         Refine feedback based on user review.
@@ -1096,10 +1209,16 @@ class RefineFeedback(LessonAwareAction):
         Args:
             draft_feedback: Initial draft feedback
             user_review: User's review comments
+            requirements_document: Current requirements document. Annotated with
+                [E#] markers and shown to the model so it can run the
+                REQUIREMENT-CHANGE TRIAGE (dedup / placement / classify) on any
+                requirement or constraint change the user review proposes.
 
         Returns:
             Refined final feedback
         """
+        from ..utils import requirements_store as rs
+
         # Get lessons, ranked by semantic similarity to the user's review comments
         lessons = self.get_lessons_for_context(context_query=user_review, limit=5)
         lessons_str = self.format_lessons(lessons) if lessons else "No previous lessons."
@@ -1109,13 +1228,30 @@ class RefineFeedback(LessonAwareAction):
         if not user_prefs:
             user_prefs = ""
 
+        # Annotate the document with [E#] markers so triage can address bullets,
+        # and with each item's standing so the triage can see which items are
+        # themselves still unverified.
+        annotated_doc = (
+            self.annotate_requirements(requirements_document, addressing_markers=True)
+            if requirements_document else "(current requirements unavailable)"
+        )
+
         # Render prompt from template
         prompt = self.render_prompt(
             draft_feedback=draft_feedback,
             user_review=user_review,
             lessons=lessons_str,
-            user_preferences=user_prefs
+            user_preferences=user_prefs,
+            requirements_document=annotated_doc
         )
+
+        # Append the shared triage decision procedure so user-proposed
+        # requirement/constraint changes are deduped, placed, and classified
+        # before they reach the document.
+        triage_section = self.context.prompt_manager.get_section(
+            "Evaluator", "RequirementChangeTriage"
+        )
+        prompt = prompt + "\n\n" + triage_section
 
         # Call LLM
         response = await self._aask(prompt)

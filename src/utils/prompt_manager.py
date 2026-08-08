@@ -173,6 +173,11 @@ class PromptManager:
             "UpdateRequirements",       # Evaluator - updating requirements doesn't need convergence criteria
             "GenerateSyntaxRepairInstruction",  # Evaluator - syntax repair is pre-verification, no convergence concept
             "RefineSyntaxRepairInstruction",  # Evaluator - refining syntax repair is pre-verification, no convergence concept
+            # Evaluator - ResponseFormatInterpretation has no convergence field;
+            # the recommendation is made once, by GenerateSemanticFeedback. Sent
+            # here it is unactionable text sitting between the response format
+            # and the appended analysis sections.
+            "InterpretResults",
         }
 
         # Define which actions should NOT include QualityStandards

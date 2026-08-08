@@ -26,6 +26,11 @@ class RequirementPatchLogEntry:
     raw_response: str  # LLM's raw === REQUIREMENT PATCH === text (post-retry, if retried)
     ops_requested: List[Dict[str, str]] = field(default_factory=list)  # [{"op", "target"}, ...] as parsed
     applied: List[str] = field(default_factory=list)
+    # Applied ops with their text: [{"op", "target", "before", "after"}, ...].
+    # `applied` says an item changed; this says what it said before and after -
+    # the only record that shows whether a MODIFY narrowed a requirement or
+    # reversed it, and therefore which encodings it invalidated.
+    changes: List[Dict[str, str]] = field(default_factory=list)
     blocked: List[str] = field(default_factory=list)
     errors: List[str] = field(default_factory=list)
     no_change: bool = False
@@ -43,6 +48,7 @@ class RequirementPatchLogEntry:
             raw_response=data.get("raw_response", ""),
             ops_requested=data.get("ops_requested", []),
             applied=data.get("applied", []),
+            changes=data.get("changes", []),
             blocked=data.get("blocked", []),
             errors=data.get("errors", []),
             no_change=data.get("no_change", False),
@@ -70,6 +76,59 @@ class RequirementPatchLog:
 
     def get_recent_entries(self, count: int = 5) -> List[RequirementPatchLogEntry]:
         return sorted(self.entries, key=lambda e: e.iteration_id, reverse=True)[:count]
+
+    @staticmethod
+    def _extract_changed_ids(entries, ops) -> List[str]:
+        """Requirement-ID targets of the given ops across `entries` (order-preserving)."""
+        ids: List[str] = []
+        for e in entries:
+            for applied in e.applied:
+                parts = applied.split(None, 1)
+                if len(parts) != 2:
+                    continue
+                op, target = parts[0].strip().upper(), parts[1].strip()
+                if op in ops and target not in ids:
+                    ids.append(target)
+        return ids
+
+    def changed_requirement_ids(
+        self, iteration_id: int, ops=("MODIFY", "REMOVE")
+    ) -> List[str]:
+        """
+        Requirement IDs changed (default: MODIFY/REMOVE - the ops that invalidate
+        an existing encoding; ADD introduces a new requirement with no stale
+        encoding) in one iteration. Targets are raw tokens, e.g. "R6", "R4.2.1".
+        """
+        return self._extract_changed_ids(self.get_entries_for_iteration(iteration_id), ops)
+
+    def changed_requirement_ids_since(
+        self, min_iteration: int, ops=("MODIFY", "REMOVE")
+    ) -> List[str]:
+        """Requirement IDs changed at or after `min_iteration` (a recent window)."""
+        entries = [e for e in self.entries if e.iteration_id >= min_iteration]
+        return self._extract_changed_ids(entries, ops)
+
+    def changes_since(
+        self, min_iteration: int, ops=("MODIFY", "REMOVE")
+    ) -> List[Dict[str, Any]]:
+        """
+        Before/after text of every `ops` change at or after `min_iteration`,
+        oldest first, each tagged with its iteration.
+
+        The companion to changed_requirement_ids_since: that one answers WHICH
+        requirements changed, this one answers HOW - which is what a caller
+        needs to say "R6 no longer says X, so delete the construct encoding X"
+        rather than only "R6 changed".
+        """
+        wanted = {o.upper() for o in ops}
+        out: List[Dict[str, Any]] = []
+        for e in sorted(self.entries, key=lambda x: x.iteration_id):
+            if e.iteration_id < min_iteration:
+                continue
+            for change in e.changes or []:
+                if (change.get("op") or "").upper() in wanted:
+                    out.append({"iteration_id": e.iteration_id, **change})
+        return out
 
     def get_all_blocked(self) -> List[Dict[str, Any]]:
         """All blocked-removal records across the run, e.g. to audit protected

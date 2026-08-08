@@ -1,8 +1,15 @@
 """
-Two-key evidence gate (apply_evidence_alignment): requirements diagnosis is
-only mandated when BOTH the InterpretResults causal analysis and the
-deterministic diagnostics support a requirement-level cause; otherwise the
-level-3 escalation is redirected to MODEL_OVERCONSTRAINT_REPAIR.
+Evidence gate (apply_evidence_alignment) over a level-3 semantic escalation.
+
+The InterpretResults causal analysis decides: requirements diagnosis is
+mandated whenever it attributes the failure to the requirements, and the
+escalation is redirected to MODEL_OVERCONSTRAINT_REPAIR whenever it does not
+(cause `model`, `mixed`, or `unknown`).
+
+The deterministic diagnostics corroborate but do not veto. Their `modeling`
+verdicts establish WHERE the contradiction sits - inside a predicate body, or
+below the bounds - which is not the same question as whether the requirement
+that body transcribes is sound.
 """
 
 import copy
@@ -40,8 +47,8 @@ REQ_INTERPRETATION = """
 Classification: expected_failure
 """
 
-# Iteration-68 diagnostics: internal contradiction + single-requirement
-# localization - both modeling evidence.
+# Iteration-68 diagnostics: internal contradiction (modeling) + single-requirement
+# localization (now REQUIREMENT evidence: a requirement can be self-inconsistent).
 ITER68_DIAGNOSTICS = {
     "All_Requirements": {
         "scope_sweep": {"performed": True, "sat_at_larger_scope": False},
@@ -52,6 +59,26 @@ ITER68_DIAGNOSTICS = {
         "localization": {
             "verdict": "localized",
             "blocking_facts": ["EmergencyTriggerStructure", "DelegationValidity"],
+            "implicated_requirements": ["R1"],
+        },
+    },
+}
+
+# Purely modeling diagnostics (no requirement evidence) - for the veto test.
+MODELING_ONLY_DIAGNOSTICS = {
+    "All_Requirements": {
+        "scope_sweep": {"performed": True, "sat_at_larger_scope": False},
+        "localization": {"verdict": "internal_contradiction", "runs": 1},
+    },
+}
+
+# A single internally-inconsistent requirement (localized to exactly one R#).
+SINGLE_REQ_DIAGNOSTICS = {
+    "R1": {
+        "scope_sweep": {"performed": True, "sat_at_larger_scope": False},
+        "localization": {
+            "verdict": "localized",
+            "blocking_facts": ["R1_Structure"],
             "implicated_requirements": ["R1"],
         },
     },
@@ -118,8 +145,16 @@ def test_diagnostics_verdicts():
     assert summary["ran"] is True
     assert summary["per_issue"]["All_Requirements"] == "internal_contradiction"
     assert summary["per_issue"]["R1"] == "single_requirement"
+    # internal_contradiction is modeling; single_requirement is now REQUIREMENT
+    # evidence (a requirement can be internally inconsistent), so both are present.
     assert summary["modeling_evidence"] is True
-    assert summary["requirement_evidence"] is False
+    assert summary["requirement_evidence"] is True
+
+    # A lone single-requirement localization is requirement evidence, not modeling.
+    single = summarize_diagnostics_evidence(SINGLE_REQ_DIAGNOSTICS)
+    assert single["per_issue"]["R1"] == "single_requirement"
+    assert single["requirement_evidence"] is True
+    assert single["modeling_evidence"] is False
 
     multi = summarize_diagnostics_evidence(MULTI_REQ_DIAGNOSTICS)
     assert multi["per_issue"]["R3"] == "requirement_conflict"
@@ -164,11 +199,61 @@ def test_both_sources_agree_keeps_requirements_diagnosis():
     assert "requirements diagnosis AUTHORIZED" in escalation["directive"]
 
 
-def test_requirement_interpretation_but_modeling_diagnostics():
-    """Diagnostics veto: interpretation says requirements, measurements say modeling."""
-    escalation = make_escalation(ITER68_DIAGNOSTICS)
+def test_requirement_interpretation_survives_modeling_diagnostics():
+    """The sources disagree, and the interpretation wins.
+
+    `internal_contradiction` means the predicate is UNSAT with every fact
+    disabled - it establishes that the contradiction sits inside the predicate
+    body, not that the requirement that body transcribes is sound. A predicate
+    faithfully encoding a self-contradictory requirement measures exactly this
+    way, so reading it as a refutation buried the requirement defect the
+    interpretation was reporting. The two remaining risks are handled in the
+    prompt, not here: a scope artifact is overridden per issue by the
+    DETERMINISTIC DIAGNOSIS block, and a genuinely over-strong encoding is
+    routed out by the `model overconstraint` exception in rule 2.
+    """
+    escalation = make_escalation(MODELING_ONLY_DIAGNOSTICS)
     result = apply_evidence_alignment(escalation, REQ_INTERPRETATION)
-    assert result["strategy"] == MODEL_OVERCONSTRAINT_REPAIR
+    assert result["strategy"] == REQUIREMENTS_DIAGNOSIS
+    assert "not whether the requirement" in result["reason"]
+    assert "requirements diagnosis AUTHORIZED" in escalation["directive"]
+
+
+def test_only_the_interpretation_can_redirect_to_model_repair():
+    """The gate is now one-sided: no diagnostics verdict produces model repair
+    while the interpretation reads requirement-level. Pin that, so a future
+    verdict added to the `modeling` set cannot silently restore the veto."""
+    for diagnostics in (
+        MODELING_ONLY_DIAGNOSTICS, SINGLE_REQ_DIAGNOSTICS,
+        MULTI_REQ_DIAGNOSTICS, ITER68_DIAGNOSTICS, None,
+    ):
+        escalation = make_escalation(diagnostics)
+        result = apply_evidence_alignment(escalation, REQ_INTERPRETATION)
+        assert result["strategy"] == REQUIREMENTS_DIAGNOSIS, diagnostics
+
+
+def test_a_scope_artifact_still_reaches_the_evaluator_as_measured():
+    """Requirements diagnosis no longer suppresses it, so the prompt's per-issue
+    override is the only thing standing between a bounded-search artifact and a
+    requirement rewrite. The verdict must therefore survive into the directive."""
+    escalation = make_escalation({
+        "R1": {
+            "scope_sweep": {"performed": True, "sat_at_larger_scope": True,
+                            "swept_command": "run R1 for 12"},
+            "localization": {},
+        },
+    })
+    result = apply_evidence_alignment(escalation, REQ_INTERPRETATION)
+    assert result["strategy"] == REQUIREMENTS_DIAGNOSIS
+    assert result["diagnostics_per_issue"]["R1"] == "scope_artifact"
+    assert "SAT at enlarged bounds" in escalation["directive"]
+
+
+def test_single_requirement_is_requirement_evidence():
+    """A single internally-inconsistent requirement authorizes requirements diagnosis."""
+    escalation = make_escalation(SINGLE_REQ_DIAGNOSTICS)
+    result = apply_evidence_alignment(escalation, REQ_INTERPRETATION)
+    assert result["strategy"] == REQUIREMENTS_DIAGNOSIS
 
 
 def test_no_diagnostics_falls_back_to_interpretation():

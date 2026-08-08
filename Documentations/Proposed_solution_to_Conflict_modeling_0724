@@ -1,0 +1,377 @@
+Created by Codex
+ I recommend a three-phase prompt update plan. It covers every Evaluator action while keeping deterministic evidence separate from LLM
+  judgment.
+
+  ## Phase 1 — Shared diagnostic contract and structured interpretation
+
+  ### 1. Update shared sections
+
+  Target:
+
+  - prompts/Evaluator_prompt.txt:1
+  - prompts/Evaluator_prompt.txt:4
+  - prompts/Evaluator_prompt.txt:31
+
+  Add a common diagnosis taxonomy:
+
+  MODEL FAITHFULNESS:
+  - faithful
+  - stale
+  - overstrong
+  - understrong
+  - missing
+  - orphaned
+  - unknown
+
+  REQUIREMENT CONSISTENCY:
+  - consistent
+  - self-contradictory
+  - conflicting-set
+  - ambiguous
+  - incomplete
+  - unknown
+
+  VERIFICATION ADEQUACY:
+  - adequate
+  - uncovered
+  - vacuous
+  - circular
+  - scope-limited
+  - unknown
+
+  Add binding principles:
+
+  - Do not infer requirement provenance from Alloy construct names.
+  - Use the supplied traceability manifest.
+  - A single requirement may be internally inconsistent.
+  - “Mixed” is a valid diagnosis.
+  - Approximate diagnostic evidence must not be called minimal or proven.
+  - Do not change requirements merely to make Alloy satisfiable.
+  - Existing E# requirements and prospective R# requirements must be analyzed separately.
+
+  ### 2. Add prompt inputs
+
+  Update the action interfaces to provide:
+
+  {{traceability_manifest}}
+  {{requirement_version_changes}}
+  {{model_discipline_report}}
+  {{coverage_report}}
+  {{deterministic_diagnostics}}
+
+  These should be computed outside the LLM. The prompt should interpret them, not recreate them.
+
+  ### 3. Rewrite InterpretResults
+
+  Target: prompts/Evaluator_prompt.txt:148
+
+  Require this order:
+
+  1. Check model-discipline violations.
+  2. Check stale constructs after requirement changes.
+  3. Check circular assertions and missing coverage.
+  4. Inspect scope evidence.
+  5. Inspect decisive blockers and approximate suspects.
+  6. Compare each blocker with its traced English clause.
+  7. Classify model, requirement, and verification dimensions independently.
+  8. Recommend the next discriminating experiment if evidence remains insufficient.
+
+  Replace the free-form Likely Cause sentence with structured output:
+
+  {
+    "model_faithfulness": {
+      "verdict": "stale",
+      "constructs": ["EmergencyUnique"],
+      "requirements": ["R1"],
+      "evidence": ["Disabling EmergencyUnique changes UNSAT to SAT"],
+      "confidence": "high"
+    },
+    "requirement_consistency": {
+      "verdict": "consistent",
+      "requirements": ["R1"],
+      "evidence": ["Current confirmed R1 permits repeated Emergencies"]
+    },
+    "verification_adequacy": {
+      "verdict": "circular",
+      "constructs": ["EmergencyUnique", "assertEmergencyUnique"]
+    }
+  }
+
+  ### 4. Update specialized interpretation actions
+
+  #### InterpretUNSATPred
+
+  Target: prompts/Evaluator_prompt.txt:200
+
+  Require:
+
+  - Separate decisive blockers, tested non-blockers, and untested suspects.
+  - Assess whether each blocker is justified by its traced requirement.
+  - Classify stale or untraceable blockers as modeling defects.
+  - Diagnose a requirement conflict only when faithfully encoded clauses conflict.
+  - Permit single-requirement self-contradiction.
+  - Propose experiments that distinguish competing hypotheses.
+
+  #### InterpretSatInstance
+
+  Target: prompts/Evaluator_prompt.txt:299
+
+  Require:
+
+  - Map every instance behavior to requirement clauses.
+  - Identify covered and uncovered requirements.
+  - Detect trivial or vacuous witnesses.
+  - Look for behavior allowed by the model but forbidden by English.
+  - Do not treat SAT as proof of faithful encoding.
+
+  #### InterpretCounterexample
+
+  Target: prompts/Evaluator_prompt.txt:373
+
+  Require:
+
+  - Verify that the assertion is independent of facts.
+  - Trace the assertion to exact requirement clauses.
+  - Distinguish:
+      - missing model constraint,
+      - overstrong assertion,
+      - faithful exposure of a requirement conflict,
+      - scope artifact.
+
+  - Never recommend converting a failing assertion into a fact.
+
+  ### Phase 1 acceptance criteria
+
+  - No causal decision depends on keyword matching in prose.
+  - EmergencyUnique is classified as stale/overstrong.
+  - Its matching assertion is classified as circular.
+  - A single requirement can be classified as self-contradictory.
+  - Approximate UNSAT localization remains explicitly inconclusive.
+
+  ———
+
+  ## Phase 2 — Correct feedback and requirement-update behavior
+
+  ### 1. Rewrite GenerateSemanticFeedback
+
+  Target: prompts/Evaluator_prompt.txt:478
+
+  Require three separate feedback sections:
+
+  === MODEL REPAIRS ===
+  === REQUIREMENT ISSUES ===
+  === VERIFICATION REPAIRS ===
+
+  For every model repair, require:
+
+  - Exact construct.
+  - Traced requirement.
+  - Measured evidence.
+  - Type of mismatch.
+  - Concrete repair.
+  - Behavior that must remain unchanged.
+  - Targeted rerun commands.
+
+  For every requirement issue, require:
+
+  - Exact quoted clauses.
+  - Minimal conflicting or ambiguous set.
+  - Why the encoding is considered faithful.
+  - At least two stakeholder-level resolution alternatives.
+  - Behavioral impact of each alternative.
+  - Explicit user confirmation request.
+
+  For verification repairs, require:
+
+  - Missing witness or assertion.
+  - Circular or vacuous check.
+  - Coverage gap.
+  - Required new run/check command.
+
+  ### 2. Replace PersistentIssueEscalation
+
+  Target: prompts/Evaluator_prompt.txt:615
+
+  Remove the current binary two-key rule.
+
+  Replace it with:
+
+  Evidence reconciliation outcomes:
+  1. MODEL_ONLY
+  2. REQUIREMENT_ONLY
+  3. BOTH
+  4. SCOPE_OR_COVERAGE
+  5. INCONCLUSIVE
+
+  Rules:
+
+  - Deterministic evidence may override unsupported LLM speculation.
+  - It must not prohibit requirement analysis merely because only one ID is implicated.
+  - Mixed evidence produces BOTH, not forced model repair.
+  - Inconclusive evidence triggers a discriminating experiment, not another speculative repair.
+  - Repeated failure of the same repair strategy forces a different experiment.
+
+  ### 3. Update RefineFeedback
+
+  Target: prompts/Evaluator_prompt.txt:923
+
+  Make it an evidence-audit action rather than another diagnosis pass.
+
+  It should verify that draft feedback:
+
+  - Uses only measured evidence.
+  - Does not call approximate results proven.
+  - Does not propose requirement weakening to hide model defects.
+  - Keeps modeling instructions out of requirement updates.
+  - Does not repeat failed fixes.
+  - Preserves confirmed user answers.
+  - Includes all affected requirement IDs and constructs.
+  - Contains concrete validation commands.
+
+  ### 4. Update requirement-change triage
+
+  Target: prompts/Evaluator_prompt.txt:448
+
+  Add two buckets:
+
+  SUPERSEDED REQUIREMENT
+  STALE MODEL ENCODING
+
+  This prevents a confirmed requirement revision from being mistaken for a new inconsistency.
+
+  Require the Evaluator to decide whether:
+
+  - New text supersedes previous prospective text.
+  - Two versions are unintentionally both active.
+  - The requirement is unchanged but its encoding is stale.
+  - The candidate is actually a modeling instruction.
+
+  ### 5. Rewrite UpdateRequirements
+
+  Target: prompts/Evaluator_prompt.txt:1025
+
+  Require:
+
+  - Only user-confirmed requirement changes may be applied.
+  - Preserve an explicit supersession/version record.
+  - Never insert Alloy terminology into English requirements.
+  - Never alter an E# requirement automatically.
+  - Reject duplicate or malformed IDs.
+  - Preserve parent-child requirement structure.
+  - Generate a list of model constructs invalidated by each changed requirement.
+
+  Suggested response addition:
+
+  === INVALIDATED MODEL TRACE ===
+  Changed Requirement: R1
+  Superseded Version: “The system can only enter Emergency once.”
+  Current Version: “The system may experience multiple Emergency periods.”
+  Constructs requiring regeneration:
+  - EmergencyUnique
+  - assertEmergencyUnique
+  - All_Requirements
+
+  ### Phase 2 acceptance criteria
+
+  - Model and requirement fixes are never mixed into one generic repair section.
+  - Requirement updates are stakeholder-level and confirmation-gated.
+  - User-confirmed revisions invalidate stale model constructs.
+  - Persistent issues can produce BOTH or INCONCLUSIVE.
+  - Repair feedback names exact constructs and reruns.
+
+  ———
+
+  ## Phase 3 — Syntax safety, convergence, and prompt validation
+
+  ### 1. Update syntax-repair actions
+
+  Targets:
+
+  - prompts/Evaluator_prompt.txt:662
+  - prompts/Evaluator_prompt.txt:819
+
+  Add a semantic-freeze rule:
+
+  - Syntax repair must preserve trace annotations.
+  - It must not move R# constraints into facts.
+  - It must not alter requirement meaning.
+  - Any unavoidable semantic change must be reported and returned to semantic evaluation.
+  - New constructs introduced during syntax repair must have provenance.
+
+  ### 2. Update response formats
+
+  Targets:
+
+  - prompts/Evaluator_prompt.txt:995
+  - prompts/Evaluator_prompt.txt:1104
+  - prompts/Evaluator_prompt.txt:1125
+  - prompts/Evaluator_prompt.txt:1168
+
+  Use machine-validated JSON for diagnosis and stable Markdown sections for user-facing feedback.
+
+  Reject responses that omit:
+
+  - Classification dimensions.
+  - Evidence.
+  - Requirement traces.
+  - Confidence.
+  - Validation commands.
+  - User confirmation status.
+
+  ### 3. Strengthen convergence criteria
+
+  Target: prompts/Evaluator_prompt.txt:1265
+
+  Convergence should require:
+
+  - Baseline SAT.
+  - Each atomic prospective requirement compatible with baseline.
+  - All prospective requirements jointly SAT.
+  - No failed assertions.
+  - All required scenario witnesses SAT.
+  - No stale model constructs.
+  - No prospective requirements encoded as facts.
+  - No circular assertions.
+  - Complete requirement coverage.
+  - No unresolved high-confidence requirement inconsistency.
+  - No malformed or duplicate requirement IDs.
+
+  ### 4. Update learning rules
+
+  Target: prompts/Evaluator_prompt.txt:1283
+
+  Store lessons only after:
+
+  - The targeted issue changes as predicted.
+  - Full regression remains stable.
+  - The requirement trace is valid.
+  - The repair is not merely correlated with success.
+
+  Do not learn speculative LLM diagnoses.
+
+  ### 5. Add prompt regression tests
+
+  Create tests for at least:
+
+  1. Stale prospective fact: EmergencyUnique.
+  2. Circular fact/assertion pair.
+  3. Genuine E–R conflict.
+  4. Genuine R–R conflict.
+  5. Single internally contradictory requirement.
+  6. Insufficient scope.
+  7. Missing requirement encoding.
+  8. Underconstrained SAT model.
+  9. Requirement revision invalidating old constructs.
+  10. Approximate localization with untested facts.
+
+  Run each case through InterpretResults and GenerateSemanticFeedback, validating their structured outputs.
+
+  ### Phase 3 acceptance criteria
+
+  - Syntax repair cannot silently change semantics.
+  - Convergence includes faithfulness and coverage, not just Analyzer success.
+  - Prompt outputs are deterministically parseable.
+  - Regression tests distinguish model, requirement, mixed, scope, and inconclusive cases.
+
+  The highest-priority prompt sections are InterpretResults, InterpretUNSATPred, GenerateSemanticFeedback, PersistentIssueEscalation,
+  and ResponseFormatInterpretation. Updating those first will produce the largest improvement.

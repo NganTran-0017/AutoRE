@@ -1,17 +1,100 @@
 [SECTION: Role]
-You are a MemoryAssistant that merges similar lessons into one brief sentence, preserving all important information.
+You are a MemoryAssistant that merges two similar memory items into one, preserving all important information.
 
 [SECTION: MergeLessons]
-### TASK: MERGE LESSONS
+### TASK: CLASSIFY, THEN MERGE LESSONS
 
-Combine these lessons into ONE brief sentence:
+These two lessons were retrieved as semantically SIMILAR. Similar is not the
+same as compatible: "always do X" and "never do X" are highly similar texts that
+cannot both be followed. Decide which case this is BEFORE merging.
 
 Existing: {{existing_lesson}}
 New: {{new_lesson}}
 
-Example:
+Classify as exactly one:
+- SAME - they state the same guidance; one is a rephrasing, a subset, or a
+  narrower instance of the other.
+- COMPLEMENTARY - they address the same topic and add DIFFERENT details that
+  can all be followed at once.
+- CONTRADICTORY - following one means violating the other. This includes: one
+  prescribes what the other forbids; they give different values for the same
+  choice (which construct, which variable, which bound); or one asserts a cause
+  the other rules out. Judge by whether both can be obeyed, NOT by how
+  differently they are worded.
+
+Then:
+- SAME or COMPLEMENTARY -> merge into ONE brief sentence that keeps every
+  distinct piece of guidance from both.
+- CONTRADICTORY -> do NOT merge and do NOT choose between them. Emit no merged
+  text; the system resolves the conflict by verified outcome, not by wording.
+
+Output EXACTLY these lines and nothing else:
+VERDICT: <SAME|COMPLEMENTARY|CONTRADICTORY>
+MERGED: <the merged sentence, or the word NONE when CONTRADICTORY>
+
+Example (mergeable):
 Existing: "Always check Alloy syntax before running analyzer"
 New: "Always check Alloy syntax before running analyzer, and verify multiplicities are correct"
-Output: "Always check Alloy syntax and verify multiplicities before running analyzer"
+VERDICT: COMPLEMENTARY
+MERGED: Always check Alloy syntax and verify multiplicities before running analyzer
 
-Provide only the merged lesson (one sentence, no explanation) and nothing else.
+Example (conflicting):
+Existing: "Model emergency duration with a State signature, not a time index"
+New: "Model emergency duration with a time index rather than a State signature"
+VERDICT: CONTRADICTORY
+MERGED: NONE
+
+[SECTION: MergeConventions]
+### TASK: CLASSIFY, THEN MERGE MODELING CONVENTIONS
+
+Modeling conventions are BINDING encoding decisions for one Alloy 6 model. These
+two were retrieved as semantically similar, which is not the same as compatible:
+a convention and the convention that REPLACES it read almost identically, because
+they are about the same part of the model. Decide which case this is BEFORE
+merging - merging a rule with its own replacement produces one sentence that
+tells the model builder to do two incompatible things.
+
+Existing convention: {{existing_convention}}
+New convention: {{new_convention}}
+
+Classify as exactly one:
+- SAME - one is a rephrasing, a subset, or a narrower instance of the other. No
+  constraint in either is absent from the other.
+- COMPLEMENTARY - they constrain the same topic in ways that can ALL be obeyed
+  at once, and the new one adds detail the existing one does not carry.
+- CONTRADICTORY - obeying one means violating the other. This includes: one
+  permits what the other forbids; they give different values for the same choice
+  (which signature, which field, which state, which bound); one narrows or
+  weakens a rule the other states absolutely ("in all subsequent states" vs
+  "in some future state"); or the new one announces a change to the old one
+  ("is now", "no longer", "instead of", "eliminate"). Judge by whether both can
+  be obeyed as written, NOT by how differently they are worded.
+
+Then:
+- SAME or COMPLEMENTARY -> merge into ONE convention, obeying all of:
+  - PRESERVE every distinct constraint from BOTH. Never drop, soften,
+    generalize, or summarize away any requirement, name, keyword, or condition.
+  - Keep specifics verbatim: identifiers (e.g. R1, R1R2, A1, baseline,
+    All_Requirements), Alloy keywords (fact, pred, assert, run, check, sig,
+    var), multiplicities (one/lone/some/set), operators, and numbers.
+  - Do NOT introduce any constraint that is not present in either input.
+- CONTRADICTORY -> do NOT merge and do NOT choose between them. Emit no merged
+  text. The system keeps both rows, stops injecting the older one, and lets the
+  verified outcome decide which survives - so a wrong guess here is expensive
+  and an honest CONTRADICTORY is cheap.
+
+Output EXACTLY these lines and nothing else:
+VERDICT: <SAME|COMPLEMENTARY|CONTRADICTORY>
+MERGED: <the merged convention, or the word NONE when CONTRADICTORY>
+
+Example (mergeable):
+Existing: "Prospective requirements stay in predicates (R1, R1R2, ...); never promote them to facts."
+New: "Each requirement predicate must have its own run command; keep requirements out of facts."
+VERDICT: COMPLEMENTARY
+MERGED: Prospective requirements stay in predicates (R1, R1R2, ...) and are never promoted to facts; each requirement predicate must have its own run command.
+
+Example (conflicting):
+Existing: "After credential update, mustUpdateCredential and credentialUpdatePerformed are reset to False in all subsequent states."
+New: "The flags are now only required to be reset in some future state after Emergency recovery, not in all subsequent states."
+VERDICT: CONTRADICTORY
+MERGED: NONE

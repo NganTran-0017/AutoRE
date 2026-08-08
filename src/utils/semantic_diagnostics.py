@@ -25,12 +25,24 @@ Alloy; `make_alloy_sat_checker` provides the production adapter.
 
 import re
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
 
 CheckFn = Callable[[str, str], Optional[bool]]
 
 _DIAG_MARKER = "//DIAG "
+
+# RE Mode 3: a diagnostic probe is named `probe<N>_<Target>` and marked
+# `//@req none:probe`. The name is the contract - it is how a probe's verdict is
+# told apart from a requirement's verdict everywhere downstream, so that a probe
+# that is UNSAT because its hypothesis was wrong is read as a completed
+# measurement instead of an unsatisfied requirement.
+PROBE_NAME_RE = re.compile(r'^probe\d+_\w+$')
+
+
+def is_probe_name(name: str) -> bool:
+    """True for a Mode 3 diagnostic probe command/predicate name."""
+    return bool(PROBE_NAME_RE.match((name or "").strip()))
 
 
 def _strip_line_comment(line: str) -> str:
@@ -63,6 +75,32 @@ def extract_fact_blocks(model_text: str) -> List[Dict[str, Any]]:
         if m:
             facts.append({'name': m.group(1), 'start': i, 'end': _find_block_end(lines, i)})
     return facts
+
+
+_BLOCK_KINDS = ('fact', 'pred', 'assert', 'fun')
+
+
+def extract_all_blocks(model_text: str) -> List[Dict[str, Any]]:
+    """
+    List the model's named top-level blocks: [{'name', 'kind', 'start', 'end'}]
+    (line indices inclusive) for fact/pred/assert/fun.
+
+    Generalizes extract_fact_blocks to every construct kind so a
+    requirement->construct traceability map can be built from the model text.
+    """
+    lines = model_text.splitlines()
+    blocks = []
+    pattern = re.compile(r'\s*(' + '|'.join(_BLOCK_KINDS) + r')\s+(\w+)')
+    for i, line in enumerate(lines):
+        m = pattern.match(_strip_line_comment(line))
+        if m:
+            blocks.append({
+                'name': m.group(2),
+                'kind': m.group(1),
+                'start': i,
+                'end': _find_block_end(lines, i),
+            })
+    return blocks
 
 
 def disable_facts(model_text: str, fact_names: List[str]) -> str:
@@ -122,14 +160,79 @@ def enlarge_run_scope(model_text: str, predicate: str, factor: int = 2, cap: int
     return None
 
 
-def requirement_ids(names: List[str]) -> List[str]:
-    """Extract requirement IDs from R-prefixed construct names (R1R2_x -> R1, R2)."""
+def requirement_ids(names: List[str], prefixes: Tuple[str, ...] = ('R',)) -> List[str]:
+    """Extract requirement IDs from prefixed construct names (R1R2_x -> R1, R2).
+
+    prefixes: which ID prefixes to recognize. Defaults to R-only (the
+    emergency-module requirements) so existing diagnostic callers are
+    unchanged; pass ('R', 'E') to also pick up the existing-system
+    requirements (E1_ClearanceAssignment -> E1).
+    """
+    pattern = re.compile('(' + '|'.join(re.escape(p) for p in prefixes) + r')(\d+)')
     ids: List[str] = []
     for name in names:
-        for rid in re.findall(r'R\d+', name or ''):
+        for prefix, num in pattern.findall(name or ''):
+            rid = f"{prefix}{num}"
             if rid not in ids:
                 ids.append(rid)
-    return sorted(ids, key=lambda r: int(r[1:]))
+    return sorted(ids, key=lambda r: (r[0], int(r[1:])))
+
+
+def build_reference_graph(model_text: str) -> Dict[str, Any]:
+    """
+    Which constructs reference which, plus the run/check entry points.
+
+    Helper functions and predicates carry no requirement of their own - they
+    SERVE the constructs that call them - so their ownership is derived from
+    this graph rather than declared. A helper with no caller and no run/check
+    invocation is dead code.
+
+    Returns {'refs': {name: set(names it references)},
+             'callers': {name: set(names that reference it)},
+             'entry_points': set(names invoked by a run/check command),
+             'commands': {name: [line indices of its run/check commands]}}.
+
+    'commands' matters for deletion: removing a predicate or assertion without
+    its run/check line leaves a command naming a construct that no longer
+    exists, which will not parse.
+    """
+    lines = model_text.splitlines()
+    blocks = extract_all_blocks(model_text)
+    names = {b['name'] for b in blocks}
+
+    refs: Dict[str, Set[str]] = {n: set() for n in names}
+    for b in blocks:
+        body = "\n".join(
+            _strip_line_comment(l) for l in lines[b['start']:b['end'] + 1]
+        )
+        for token in set(re.findall(r'\b[A-Za-z_]\w*\b', body)):
+            if token in names and token != b['name']:
+                refs[b['name']].add(token)
+
+    callers: Dict[str, Set[str]] = {n: set() for n in names}
+    for name, targets in refs.items():
+        for target in targets:
+            callers[target].add(name)
+
+    # `run p` / `check a` are call sites too: without them a witness predicate
+    # or a checked assertion looks unreferenced and would be misread as dead.
+    inside = set()
+    for b in blocks:
+        inside.update(range(b['start'], b['end'] + 1))
+    commands: Dict[str, List[int]] = {}
+    for i, line in enumerate(lines):
+        if i in inside:
+            continue
+        m = re.match(r'\s*(run|check)\s+(\w+)', _strip_line_comment(line))
+        if m and m.group(2) in names:
+            commands.setdefault(m.group(2), []).append(i)
+
+    return {
+        'refs': refs,
+        'callers': callers,
+        'entry_points': set(commands),
+        'commands': commands,
+    }
 
 
 def scope_sweep(model_text: str, predicate: str, check: CheckFn) -> Dict[str, Any]:

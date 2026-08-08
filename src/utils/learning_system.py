@@ -1,7 +1,7 @@
 """
 Learning system for coordinating learning across agents.
 """
-from typing import List
+from typing import List, Optional
 import re
 from .memory_system import LongTermMemorySystem
 
@@ -56,7 +56,7 @@ class LearningSystem:
 
         Returns:
             Cleaned output with learning markers removed (defer_storage=False),
-            or a (cleaned_output, lessons) tuple (defer_storage=True)
+            or a (cleaned_output, lessons, retractions) tuple (defer_storage=True)
         """
         # Extract lessons; store immediately unless deferred
         lessons = self._extract_marked_content(agent_output, "LESSON")
@@ -74,8 +74,30 @@ class LearningSystem:
         # decisions). Stored immediately - never deferred - because the model
         # builder must be able to rely on them every subsequent iteration.
         conventions = self._extract_marked_content(agent_output, "CONVENTION")
+        convention_decisions = []
         for convention in conventions:
-            self._store_convention_if_new(convention, agent_name, action_name, iteration)
+            _stored, decision = self._store_convention_if_new(
+                convention, agent_name, action_name, iteration, gated=defer_storage
+            )
+            if decision:
+                convention_decisions.append(decision)
+
+        # Extract convention retractions: the RE signalling that a previously
+        # recorded binding convention is now outdated/incorrect. Retractions are
+        # ONLY honoured on the deferred path (UpdateAlloyModel) and ride the same
+        # defer/confirm gate as lessons. Staging immediately marks the matched
+        # convention "pending_withdrawn" so it stops being injected while the fix
+        # is on probation; the workflow later finalizes it to "superseded" (fix
+        # confirmed) or restores it to "active" (fix discarded). Non-deferred
+        # actions never retract (no convention exists at the initial build step).
+        retractions = self._stage_retractions(agent_output, iteration) if defer_storage else []
+
+        # A merge or a suspension decided while storing a convention rides the
+        # SAME defer/confirm gate as an explicit retraction - both are "this
+        # convention changed because of a fix that has not proven itself yet",
+        # and both are undone by the same signal. Carrying them in one list
+        # means the workflow needs no new plumbing to settle them.
+        retractions.extend(convention_decisions)
 
         # Extract and store events (never deferred)
         events = self._extract_marked_content(agent_output, "EVENT")
@@ -92,8 +114,107 @@ class LearningSystem:
         cleaned_output = self._remove_learning_markers(agent_output)
 
         if defer_storage:
-            return cleaned_output, lessons
+            return cleaned_output, lessons, retractions
         return cleaned_output
+
+    def _parse_retractions(self, text: str) -> List[dict]:
+        """
+        Extract [CONVENTION_RETRACT] markers into {'text', 'reason'} dicts.
+
+        Format: [CONVENTION_RETRACT]: <quote of the wrong convention> || <why>
+        The quoted text is used for a semantic match against stored conventions;
+        the reason is kept for the audit trail.
+        """
+        parsed = []
+        for raw in self._extract_marked_content(text, "CONVENTION_RETRACT"):
+            body, _, reason = raw.partition("||")
+            if body.strip():
+                parsed.append({'text': body.strip(), 'reason': reason.strip()})
+        return parsed
+
+    def _stage_retractions(self, agent_output: str, iteration: int) -> List[dict]:
+        """
+        Parse retraction markers and provisionally withdraw the matched
+        conventions (status -> "pending_withdrawn"), so they stop being injected
+        while the motivating fix is on probation. Each returned dict carries the
+        matched convention `id` (None if no confident match) for the workflow to
+        later finalize (-> superseded) or revert (-> active).
+        """
+        can_mark = hasattr(self.memory, "mark_convention_pending_withdrawn")
+        staged = []
+        for r in self._parse_retractions(agent_output):
+            conv_id = (
+                self.memory.mark_convention_pending_withdrawn(
+                    r['text'], r['reason'], iteration)
+                if can_mark else None
+            )
+            staged.append({**r, 'id': conv_id})
+        return staged
+
+    def apply_convention_retractions(self, retractions: List[dict], iteration: int) -> None:
+        """
+        Finalize everything staged against the confirmed fix.
+
+        Called from the workflow's defer/confirm gate once the fix that
+        motivated these changes is confirmed to have resolved the issue - so a
+        convention is only permanently withdrawn, and a merge only made
+        permanent, when the change that superseded it stuck.
+
+        Three kinds ride this list (`kind`, defaulting to "retract" for the
+        records that predate the others):
+          retract  - the RE said an existing convention is outdated
+          conflict - a new convention contradicted an existing one
+          merge    - a new convention was folded into an existing one
+        """
+        if not retractions or not hasattr(self.memory, "finalize_convention_retraction"):
+            return
+        for r in retractions:
+            kind = r.get('kind', 'retract')
+            item_type = r.get('item_type', 'convention')
+            conv_id = r.get('id')
+            if not conv_id:
+                continue
+            try:
+                if kind == 'merge':
+                    self.memory.finalize_merge(conv_id, item_type)
+                else:
+                    # retract and conflict both end the same way: the item that
+                    # was set aside is now permanently superseded.
+                    self.memory.finalize_retraction(conv_id, iteration, item_type)
+            except Exception as e:
+                print(f"Warning: convention {kind} finalize failed: {e}")
+
+    def revert_convention_retractions(self, retractions: List[dict]) -> None:
+        """
+        Undo everything staged against a fix that did not hold.
+
+        Called when the fix is discarded (issue unresolved or recurred on
+        probation). Each kind is undone in the direction that restores what the
+        run was relying on before the fix: a withdrawn convention goes back into
+        circulation, a merged row goes back to its pre-merge wording, and a
+        contradiction puts the OLD convention back and withdraws the new one -
+        the new one never earned its place, and leaving it active would keep
+        injecting the reading that just failed.
+        """
+        if not retractions or not hasattr(self.memory, "restore_convention"):
+            return
+        for r in retractions:
+            kind = r.get('kind', 'retract')
+            item_type = r.get('item_type', 'convention')
+            conv_id = r.get('id')
+            if not conv_id:
+                continue
+            try:
+                if kind == 'merge':
+                    self.memory.restore_merge(conv_id, item_type)
+                    continue
+                self.memory.restore_item(conv_id, item_type)
+                if kind == 'conflict' and r.get('new_id'):
+                    self.memory.finalize_retraction(
+                        r['new_id'], r.get('iteration', 0), item_type
+                    )
+            except Exception as e:
+                print(f"Warning: convention {kind} revert failed: {e}")
 
     def _extract_marked_content(self, text: str, marker: str) -> List[str]:
         """
@@ -183,11 +304,18 @@ class LearningSystem:
             text,
             flags=re.MULTILINE
         )
+        text = re.sub(
+            r'^\s*\*?\*?\[CONVENTION_RETRACT\]:\*?\*?\s*\n(^\s*[-*]\s+.+$\n?)+',
+            '',
+            text,
+            flags=re.MULTILINE
+        )
 
         # Pattern 2: Single-line format: **[LESSON]: text on same line
         text = re.sub(r'^\s*\*?\*?\[LESSON\]:\s*.+$', '', text, flags=re.MULTILINE)
         text = re.sub(r'^\s*\*?\*?\[EVENT\]:\s*.+$', '', text, flags=re.MULTILINE)
         text = re.sub(r'^\s*\*?\*?\[PATTERN\]:\s*.+$', '', text, flags=re.MULTILINE)
+        text = re.sub(r'^\s*\*?\*?\[CONVENTION_RETRACT\]:\s*.+$', '', text, flags=re.MULTILINE)
         text = re.sub(r'^\s*\*?\*?\[CONVENTION\]:\s*.+$', '', text, flags=re.MULTILINE)
 
         # Clean up excessive blank lines (more than 2 consecutive)
@@ -227,40 +355,72 @@ class LearningSystem:
 
         return "\n".join(lines)
 
+    @staticmethod
+    def _normalize_convention(text: str) -> str:
+        """
+        Fold the differences that make two conventions the same rule.
+
+        Case and whitespace, plus trailing punctuation: the shadow log's only
+        near-identical pair differed by a single trailing period, which slipped
+        past this guard and cost a full semantic comparison to catch at 0.99.
+        """
+        return ' '.join((text or '').lower().split()).rstrip('.;:,!').strip()
+
     def _store_convention_if_new(
         self,
         convention: str,
         agent_name: str,
         action_name: str,
-        iteration: int
-    ) -> bool:
+        iteration: int,
+        gated: bool = False
+    ) -> tuple:
         """
         Store a modeling convention unless an exact-text match already exists.
 
-        Conventions bypass the semantic lesson dedup/merge path (which is
-        lesson-collection specific), so guard against storing the same
-        convention every iteration with a normalized exact-match check.
+        The exact check runs first and is deliberate: it is deterministic and
+        free, so a convention repeated verbatim every iteration never reaches
+        the classifier at all. What survives it goes through the same banded
+        dedup lessons use - drop / classify-and-merge / new.
+
+        Args:
+            gated: True on the defer/confirm path, where the caller can settle a
+                merge or a suspension once the motivating fix is judged.
 
         Returns:
-            True if stored, False if skipped as a duplicate.
+            (stored, decision) - `stored` False when skipped as an exact
+            duplicate; `decision` a dict the caller must settle later, or None.
         """
-        normalized = ' '.join(convention.lower().split())
+        normalized = self._normalize_convention(convention)
         try:
             existing = self.memory.get_conventions(limit=200)
         except Exception:
             existing = []
         for item in existing:
-            if ' '.join(item.lower().split()) == normalized:
-                return False
+            if self._normalize_convention(item) == normalized:
+                return False, None
 
-        self.memory.store(
+        kwargs = dict(
             content=convention,
             item_type="convention",
             agent=agent_name,
             action=action_name,
-            iteration=iteration
+            iteration=iteration,
         )
-        return True
+        # The traditional store has no gated lifecycle. Test for the parameter
+        # rather than catching TypeError, which would also swallow a genuine
+        # signature error inside store() and then write the convention twice.
+        if gated and self._store_accepts_gated():
+            kwargs["gated"] = True
+        return True, self.memory.store(**kwargs)
+
+    def _store_accepts_gated(self) -> bool:
+        """True when the memory backend's store() can defer a decision."""
+        import inspect
+
+        try:
+            return 'gated' in inspect.signature(self.memory.store).parameters
+        except (TypeError, ValueError):
+            return False
 
     def get_conventions_for_prompt(
         self,
@@ -415,7 +575,8 @@ class LearningSystem:
         lesson: str,
         agent_name: str,
         action_name: str,
-        iteration: int
+        iteration: int,
+        verified: bool = False
     ):
         """
         Directly record a lesson (without parsing).
@@ -427,14 +588,65 @@ class LearningSystem:
             agent_name: Agent name
             action_name: Action name
             iteration: Current iteration
+            verified: True when the lesson already cleared the probation gate.
+                Only then may it retire a lesson it contradicts.
         """
         self.memory.store(
             content=lesson,
             item_type="lesson",
             agent=agent_name,
             action=action_name,
-            iteration=iteration
+            iteration=iteration,
+            verified=verified
         )
+
+    def resolve_lesson_conflicts(
+        self, resolved: bool, iteration: int,
+        source_iteration: Optional[int] = None,
+        lesson_texts: Optional[List[str]] = None
+    ) -> int:
+        """
+        Settle lesson contradictions raised while storing unverified lessons.
+
+        Mirrors apply_/revert_convention_retractions: the run's outcome decides
+        which of two contradicting lessons survives, never which arrived later.
+        Pass `lesson_texts` to settle only the conflicts THESE lessons raised -
+        an iteration is not an identity, and two lessons written in the same
+        iteration have unrelated fates.
+
+        No-op on memory backends without the lifecycle (the traditional store).
+        """
+        if not hasattr(self.memory, "resolve_lesson_conflicts"):
+            return 0
+        try:
+            return self.memory.resolve_lesson_conflicts(
+                resolved, iteration, source_iteration, lesson_texts
+            )
+        except TypeError:
+            # A backend on the older signature, without the per-lesson key.
+            return self.memory.resolve_lesson_conflicts(
+                resolved, iteration, source_iteration
+            )
+        except Exception as e:
+            print(f"Warning: lesson conflict resolution failed: {e}")
+            return 0
+
+    def expire_lesson_conflicts(self, current_iteration: int) -> int:
+        """
+        Undo suspensions that have waited past the configured window.
+
+        The provisional window is kept, but bounded: without this a conflict
+        raised by a lesson that has no outcome to wait for leaves the older
+        lesson withdrawn for the rest of the run, and across every restart after
+        it. Returns how many were restored.
+        """
+        if not hasattr(self.memory, "expire_stale_lesson_conflicts"):
+            return 0
+        try:
+            return self.memory.expire_stale_lesson_conflicts(current_iteration)
+        except Exception as e:
+            print(f"Warning: lesson conflict expiry failed: {e}")
+            return 0
 
     def record_convention(
         self,
@@ -450,9 +662,10 @@ class LearningSystem:
         Returns:
             True if stored, False if skipped as a duplicate.
         """
-        return self._store_convention_if_new(
+        stored, _decision = self._store_convention_if_new(
             convention, agent_name, action_name, iteration
         )
+        return stored
 
     def record_pattern(
         self,
