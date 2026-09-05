@@ -968,12 +968,12 @@ class AutoREWorkflow:
             f"repeat_root_family={entry.issue_pattern.get('repeat_count_root_family')}"
         )
 
-        # Mode 3 phase 5: the probes have now reported, so they are spent. Stage
-        # their deletion before anything else can start treating them as part of
-        # the model. A probe that survives its iteration drifts from the scenario
-        # it duplicates and quietly answers a question nobody asked.
+        # Mode 3 phase 5: the probes have now reported, so they are spent. Verify
+        # the control, keep the probe source as evidence, and roll the model back
+        # to the pre-experiment lineage before anything else can start treating
+        # the probes as part of the model.
         self._stage_diagnostic_reissue(entry)
-        self._retire_diagnostic_probes(entry)
+        self._finalize_diagnostic_model(entry)
 
         # Post-analysis chain, step 3 of 4: SemanticIssueTracker.
         # Track persistence of unsat predicates and assertion counterexamples
@@ -1177,6 +1177,16 @@ class AutoREWorkflow:
                 f"Output/LessonDedup/decisions.jsonl for both texts."
             )
 
+        # Rungs 2-3 of the semantic ladder run HERE - before requirement
+        # probation and before the interpretation - so both judge THIS model.
+        # Probation asks whether a provisional requirement's construct is
+        # implicated, and the blocking-fact evidence it reads used to be one
+        # model old: a requirement could be marked implicated by a fact the RE
+        # had already deleted. The escalation is carried forward so steps 5-6
+        # reuse it instead of re-running Alloy.
+        alloy_model = self.context.artifacts.get_latest_alloy_model()
+        diagnosis_text = self._prepare_semantic_escalation(entry, alloy_model)
+
         # Advance requirement probation on this iteration's evidence: every
         # requirement update - added, reworded or removed - is provisional until
         # the model has been verified WITH it (or, for a removal, without it)
@@ -1217,7 +1227,10 @@ class AutoREWorkflow:
         has_syntax_errors = analysis.get('has_syntax_errors', False)
 
         requirements = self.context.artifacts.get_latest_requirements()
-        alloy_model = self.context.artifacts.get_latest_alloy_model()
+        # `alloy_model` and `diagnosis_text` were computed above, before probation
+        # and before this interpretation, so the causal analysis is formed knowing
+        # which facts provably block the predicate and whether enlarging the
+        # bounds fixes it.
 
         # Only call InterpretResults if there are NO syntax errors
         interpretation = None
@@ -1234,7 +1247,8 @@ class AutoREWorkflow:
             interpretation = await self.interpret_results.run(
                 analyzer_results=results,
                 requirements_document=requirements,
-                alloy_model=alloy_model
+                alloy_model=alloy_model,
+                deterministic_diagnosis=diagnosis_text
             )
 
             # Step 4: Parse questions from InterpretResults and store as pending_questions
@@ -2245,6 +2259,58 @@ class AutoREWorkflow:
             )
             print(f"  🚧 {req_id}: no verifiable encoding after 3 iterations")
 
+    def _prepare_semantic_escalation(self, entry, alloy_model: Optional[str]) -> str:
+        """
+        Build this iteration's semantic escalation and run the deterministic
+        diagnosis, BEFORE the interpretation is written.
+
+        Returns the measured evidence as text for the InterpretResults prompt
+        ("" when nothing escalated). The escalation itself is carried on the
+        context so steps 5-6 reuse it - the diagnosis costs real Alloy runs and
+        must not happen twice in one iteration.
+
+        The ordering is the point: the interpretation now forms its causal
+        analysis knowing what was measured. The evidence gate downstream is
+        therefore a consistency check rather than a second opinion - a
+        deliberate trade, since an uninformed second opinion is worth less than
+        a well-informed first one.
+        """
+        self.context.pending_semantic_escalation = None
+        try:
+            from src.utils.repair_plateau_detector import build_semantic_escalation
+
+            persistence = getattr(entry, "semantic_issue_persistence", None)
+            escalation = build_semantic_escalation(
+                current_iteration=self.context.iteration.current,
+                semantic_persistence=persistence,
+                regression_log_entries=self.context.regression_log.entries,
+            )
+            if escalation['escalation_level'] <= 0:
+                return ""
+
+            # One message, one call: logger.log already prints to the console,
+            # so a separate print() of the same escalation showed it twice.
+            self.logger.log(
+                f"  🚨 Persistent semantic issue(s) {escalation['escalated_issues']} "
+                f"- escalation level 3 triggered; running deterministic diagnosis "
+                f"before interpretation (strategy decided by evidence alignment "
+                f"after it)"
+            )
+            before = escalation['directive']
+            self._run_semantic_diagnostics(escalation, persistence, alloy_model)
+            self.context.pending_semantic_escalation = {
+                'iteration': self.context.iteration.current,
+                'escalation': escalation,
+            }
+            # Only the measured part goes to the interpretation: the directive's
+            # head is persistence bookkeeping it already has, and the binding
+            # rules belong to the feedback step, not to a diagnosis.
+            measured = escalation['directive'][len(before):].strip()
+            return measured
+        except Exception as e:
+            self.logger.log(f"[SEMANTIC_ESCALATION] early preparation skipped: {e}")
+            return ""
+
     def _run_semantic_diagnostics(
         self,
         semantic_escalation: dict,
@@ -2308,9 +2374,12 @@ class AutoREWorkflow:
     def _flag_unowned_blockers(self, semantic_escalation, diagnostics, model_text) -> None:
         """Surface undeclared facts that provably block an UNSAT predicate.
 
-        Appended to the escalation directive rather than the interpretation
-        prompt: the localization runs AFTER InterpretResults in the same
-        iteration, so this is the earliest consumer that can act on it.
+        Appended to the escalation directive, which is now built BEFORE the
+        interpretation - so this finding reaches the causal analysis as measured
+        evidence rather than only reaching the repair step afterwards. Blocking
+        alone is dismissible and undeclared alone is dismissible; a fact that is
+        both has no defensible status, and that is worth knowing before a cause
+        is named.
         """
         try:
             from src.utils.traceability_store import (
@@ -2325,6 +2394,11 @@ class AutoREWorkflow:
                 )
             blockers = find_unowned_blockers(audit, diagnostics)
             self.context.unowned_blockers = blockers
+            # Stamp the measurement. Localization only runs on escalated
+            # iterations, so without this the list silently outlives the model it
+            # was measured against - readers compare the stamp instead of
+            # trusting whatever is on the context.
+            self.context.unowned_blockers_iteration = self.context.iteration.current
             if not blockers:
                 self.context.unowned_blocker_streaks = {}
                 return
@@ -2352,8 +2426,14 @@ class AutoREWorkflow:
             # No escalation_level bump: this method is only reachable from the
             # already-escalated branch, so the level is > 0 by construction and
             # the directive already reaches the RE at the hand-off gate.
-            semantic_escalation['directive'] += "\n\n" + format_unowned_blockers(
-                blockers, streaks
+            # Only the measured data rides on the escalation directive. The
+            # resolution rules are a section GenerateSemanticFeedback appends on
+            # its own, keyed on the finding rather than on the escalation - the
+            # response format demands a decision per fact whether or not this
+            # iteration escalated, so the rules must not be reachable only
+            # through the escalation block.
+            semantic_escalation['directive'] += (
+                "\n\n" + format_unowned_blockers(blockers, streaks)
             )
             semantic_escalation['unowned_blockers'] = blockers
             semantic_escalation['unowned_blocker_streaks'] = streaks
@@ -2392,7 +2472,12 @@ class AutoREWorkflow:
             from src.utils.traceability_store import missing_blocker_decisions
 
             blockers = getattr(self.context, 'unowned_blockers', None)
+            measured_at = getattr(self.context, 'unowned_blockers_iteration', None)
             if not isinstance(blockers, dict) or not blockers:
+                return
+            if measured_at != self.context.iteration.current:
+                # The feedback was never shown this list, so it cannot have
+                # omitted a decision for it.
                 return
             missing = missing_blocker_decisions(blockers, feedback or "")
             if missing:
@@ -3038,39 +3123,50 @@ class AutoREWorkflow:
             # requirements diagnosis instead of another round of model repair.
             from src.utils.repair_plateau_detector import build_semantic_escalation
             current_entry = self.context.regression_log.get_entry(self.context.iteration.current)
-            semantic_escalation = build_semantic_escalation(
-                current_iteration=self.context.iteration.current,
-                semantic_persistence=current_entry.semantic_issue_persistence if current_entry else None,
-                regression_log_entries=self.context.regression_log.entries
-            )
-            if semantic_escalation['escalation_level'] > 0:
+            # Step 4 already built the escalation and ran the deterministic
+            # diagnosis, before the interpretation was written. Reuse it: the
+            # diagnosis costs real Alloy runs (a scope sweep plus up to a dozen
+            # localization runs per predicate), so re-running it here would
+            # double that cost and could produce a different answer than the one
+            # the interpretation was formed against.
+            prepared = getattr(self.context, "pending_semantic_escalation", None)
+            if isinstance(prepared, dict) and prepared.get('iteration') == self.context.iteration.current:
+                semantic_escalation = prepared['escalation']
                 self.logger.log(
-                    f"  🚨 Persistent semantic issue(s) "
-                    f"{semantic_escalation['escalated_issues']} - escalation "
-                    f"level 3 triggered (strategy decided by evidence alignment below)"
+                    "  ♻️  Reusing the escalation and deterministic diagnosis computed "
+                    "before the interpretation"
                 )
-                print(
-                    f"  🚨 Persistent issue(s) {semantic_escalation['escalated_issues']} "
-                    f"- escalated; running deterministic diagnosis + evidence alignment"
+            else:
+                semantic_escalation = build_semantic_escalation(
+                    current_iteration=self.context.iteration.current,
+                    semantic_persistence=current_entry.semantic_issue_persistence if current_entry else None,
+                    regression_log_entries=self.context.regression_log.entries
                 )
-                # Rungs 2-3 of the semantic ladder: before the Evaluator is
-                # forced into requirements diagnosis, let the Analyzer answer
-                # empirically (scope sweep + fact localization). Appends the
-                # measured evidence to the escalation directive.
-                self._run_semantic_diagnostics(
-                    semantic_escalation,
-                    current_entry.semantic_issue_persistence if current_entry else None,
-                    alloy_model,
-                )
+                if semantic_escalation['escalation_level'] > 0:
+                    # Fallback only - step 4 skipped the preparation (a syntax
+                    # error, or the model was unavailable). Diagnose now so the
+                    # feedback still gets measured evidence, and say so, because
+                    # this is the path where the interpretation did NOT see it.
+                    self.logger.log(
+                        "  ⚠️  No prepared diagnosis for this iteration - running it now; "
+                        "the interpretation was written without it"
+                    )
+                    self._run_semantic_diagnostics(
+                        semantic_escalation,
+                        current_entry.semantic_issue_persistence if current_entry else None,
+                        alloy_model,
+                    )
+
+            if semantic_escalation['escalation_level'] > 0:
                 # Evidence gate: the InterpretResults causal analysis decides.
                 # Requirements diagnosis stays mandated whenever it attributes
                 # the failure to the requirements; otherwise the directive is
                 # redirected to targeted model repair
-                # (MODEL_OVERCONSTRAINT_REPAIR). The deterministic diagnostics
-                # corroborate where the contradiction sits but do not veto the
-                # cause. The alignment verdict is appended to the directive so
-                # GenerateSemanticFeedback sees both evidence streams and the
-                # binding conclusion.
+                # (MODEL_OVERCONSTRAINT_REPAIR). Since the diagnosis now reaches
+                # the interpretation BEFORE it is written, this is a consistency
+                # check on an informed verdict rather than a second opinion on an
+                # independent one: a cause that still contradicts the measurement
+                # is contradicting evidence the interpretation was shown.
                 from src.utils.repair_plateau_detector import apply_evidence_alignment
                 from src.utils.semantic_diagnostics import requirement_ids as _req_roots
                 # Refresh the requirement->construct map against the current
@@ -3888,17 +3984,45 @@ class AutoREWorkflow:
             print(f"  ⚠️  ownership audit skipped: {e}")
             return None
 
+    def _merge_pending_removal(self, directive: Optional[Dict[str, Any]]) -> None:
+        """Add a removal to whatever is already staged, instead of replacing it.
+
+        Three producers write this slot in one iteration - spent probes (step 4),
+        a removed requirement's constructs (step 7) and the ownership audit
+        (step 8). Assignment made the last one silently discard the others, and a
+        discarded removal is never retried: each producer only fires on the
+        condition that first surfaced it.
+        """
+        if not directive or not directive.get("directive"):
+            return
+        from src.utils.repair_plateau_detector import merge_stale_removals
+
+        existing = getattr(self.context, "pending_stale_removal", None)
+        existing = existing if isinstance(existing, dict) else None
+        merged = merge_stale_removals(
+            self.context.iteration.current, existing, directive
+        )
+        if existing and merged is not existing and merged is not directive:
+            self.logger.log(
+                f"  🧩 Staged removals merged: {existing.get('remove_targets')} "
+                f"+ {directive.get('remove_targets')} -> {merged.get('remove_targets')}"
+            )
+        self.context.pending_stale_removal = merged
+
     def _stage_stale_construct_removal(self, model_text: str, audit: Dict[str, Any]) -> None:
         """Fix D: turn the audit's orphans/dead helpers into a removal directive.
 
         Staged for the NEXT model update (the audit runs after this iteration's
         model was written). Unclassified constructs are NOT removed - they are
         unlabelled, not proven stale.
+
+        Merges into whatever is already staged rather than replacing it, and no
+        longer clears the slot first: having nothing new to remove is not a
+        reason to discard a removal another producer staged.
         """
         from src.utils.repair_plateau_detector import build_stale_construct_removal
         from src.utils.traceability_store import compute_removable_closure
 
-        self.context.pending_stale_removal = None
         try:
             # Auto-delete only orphaned FACTS (plus dead helpers). Removing a
             # fact merely relaxes the model, whereas deleting an assertion or a
@@ -3928,7 +4052,7 @@ class AutoREWorkflow:
             )
             if not directive.get("directive"):
                 return
-            self.context.pending_stale_removal = directive
+            self._merge_pending_removal(directive)
             cascaded = closure["cascaded"]
             print(
                 f"  🗑️  Stale constructs staged for removal: {closure['remove']}"
@@ -4030,7 +4154,7 @@ class AutoREWorkflow:
             closure=closure,
         )
         if directive.get("directive"):
-            self.context.pending_stale_removal = directive
+            self._merge_pending_removal(directive)
             print(
                 f"  🗑️  Requirement {removed_ids} removed; deleting its constructs "
                 f"{closure['remove']} in step 8"
@@ -4275,46 +4399,76 @@ class AutoREWorkflow:
         except Exception as e:
             self.logger.log(f"  [MODE3] re-issue staging skipped: {e}")
 
-    def _retire_diagnostic_probes(self, entry) -> None:
+    def _finalize_diagnostic_model(self, entry) -> None:
         """
-        Stage deletion of every `probe<N>_` construct once its verdict has been
-        read (RE Mode 3, phase 5).
+        Close out a diagnostic iteration: check the control, keep the probes as
+        evidence, then roll the model back (RE Mode 3, phase 5).
 
-        A probe duplicates the scenario body, so a surviving probe drifts from the
-        scenario it mirrors and its verdict stops meaning what it meant. It rides
-        the existing REMOVE_STALE_CONSTRUCTS channel, which prunes deterministically
-        and records the deletion in the ConstructRemovalLog - so the removal is
-        attributable to the workflow, not read later as the RE dropping a construct.
+        The probes have reported, so they are spent - a probe that survives its
+        iteration drifts from the scenario it duplicates and quietly answers a
+        question nobody asked. Rather than asking the RE to delete them next
+        iteration, the lineage simply reverts: iteration N+1 opens the model from
+        N-1. An illegal edit then cannot survive at all, and no pruning has to
+        succeed for the model to stay clean.
+
+        Rollback alone is not enough. The analyzer ALREADY ran on whatever the RE
+        produced, so an edited construct has already contaminated the verdicts that
+        are now in the log. The diff check is what catches that, and its answer
+        travels with the verdicts as `diagnostic_control`.
         """
         if getattr(entry, "kind", "repair") != "diagnostic":
             return
         try:
-            from src.utils.semantic_diagnostics import extract_all_blocks, is_probe_name
-            from src.utils.repair_plateau_detector import build_stale_construct_removal
+            from src.utils.repair_plateau_detector import (
+                diff_diagnostic_control,
+                extract_probe_bodies,
+            )
 
-            model_text = self.context.artifacts.get_latest_alloy_model() or ""
-            probes = sorted({
-                b["name"] for b in extract_all_blocks(model_text) if is_probe_name(b["name"])
-            })
-            if not probes:
+            iteration = self.context.iteration.current
+            diagnostic_model = self.context.artifacts.get_latest_alloy_model() or ""
+            baseline = self.context.artifacts.alloy_models.get(iteration - 1, "")
+            if not baseline and iteration - 1 > 0:
+                baseline = self.context.file_manager.load_alloy_model(iteration - 1) or ""
+
+            entry.diagnostic_probe_bodies = extract_probe_bodies(diagnostic_model) or None
+
+            control = diff_diagnostic_control(diagnostic_model, baseline)
+            entry.diagnostic_control = control["status"]
+            if control["modified"]:
+                # Raised through the log, not to a prompt: the run continues, but
+                # this iteration measured nothing and a human needs to know the RE
+                # ignored the additive-only rule.
+                self.logger.log(
+                    f"⚠️ [MODE3] CONTROL MODIFIED at iteration {iteration} - the RE "
+                    f"{control['detail']}. Mode 3 is additive-only, so every verdict from "
+                    f"this iteration is VOID and is delivered to the Evaluator as unanswered."
+                )
+                print(f"  ⚠️  Diagnostic control was modified ({control['detail']}) - verdicts void")
+            else:
+                self.logger.log(
+                    f"  [MODE3] control verified at iteration {iteration}: additions only "
+                    f"({len(control['probes'])} probe(s))"
+                )
+
+            if not baseline:
+                self.logger.log(
+                    f"  [MODE3] no iteration {iteration - 1} model to roll back to - "
+                    f"the diagnostic model stays as the lineage head"
+                )
                 return
 
-            removal = build_stale_construct_removal(
-                current_iteration=self.context.iteration.current,
-                audit={
-                    "orphan": {p: "spent diagnostic probe (verdict already recorded)"
-                               for p in probes},
-                    "dead": [],
-                    "kinds": {p: "pred" for p in probes},
-                },
-                closure={"remove": probes, "cascaded": [], "blocked": {}},
+            # Archive under a different prefix: `AlloyModel__*.als` is globbed and
+            # parsed as an int for the lineage head, so a suffixed name there breaks it.
+            self.context.file_manager.archive_diagnostic_model(diagnostic_model, iteration)
+            self.context.artifacts.store_alloy_model(iteration, baseline)
+            self.context.file_manager.save_alloy_model(baseline, iteration)
+            self.logger.log(
+                f"  🔄 [MODE3] rolled the model back to iteration {iteration - 1} - probes "
+                f"discarded; their source and verdicts are kept in the regression entry"
             )
-            if removal.get("directive"):
-                self.context.pending_stale_removal = removal
-                self.logger.log(f"  🧹 [MODE3] retiring spent probes: {', '.join(probes)}")
-                print(f"  🧹 Retiring diagnostic probe(s): {', '.join(probes)}")
+            print(f"  🔄 Diagnostic probes discarded; model restored to iteration {iteration - 1}")
         except Exception as e:
-            self.logger.log(f"  [MODE3] probe retirement skipped: {e}")
+            self.logger.log(f"  [MODE3] diagnostic finalization skipped: {e}")
 
     def _preserve_diagnostic_signal(self, draft_feedback: str, final_feedback: str) -> str:
         """
@@ -4642,6 +4796,14 @@ class AutoREWorkflow:
             diagnostic_plan=(
                 (getattr(self.context, "diagnostic_signal", None) or {}).get("items")
                 if mode == "diagnostic" else None
+            ),
+            # Recorded whether or not this became a diagnostic iteration. When the
+            # guard rails emptied the plan, the RE writes no report, so this entry
+            # is the ONLY carrier - and that is the case where the Evaluator, told
+            # nothing, proposes the same already-answered experiment next time.
+            diagnostic_dropped=(
+                (getattr(self.context, "diagnostic_signal", None) or {}).get("status_block")
+                or None
             ),
         )
 

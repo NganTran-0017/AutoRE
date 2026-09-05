@@ -118,6 +118,10 @@ class SharedRuntimeContext:
         # undeclared facts proven to block a predicate.
         self.semantic_diagnostics = None
         self.unowned_blockers = {}
+        # Iteration the blockers above were measured at. They are only valid for
+        # that iteration's model; a later reader must withhold a stale list
+        # rather than present it as evidence.
+        self.unowned_blockers_iteration = None
         # Consecutive iterations each current blocker has gone unresolved, so a
         # fact that survived a delivered instruction gets different guidance
         # than one being reported for the first time.

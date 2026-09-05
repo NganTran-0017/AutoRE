@@ -542,11 +542,13 @@ class RequirementStatusStore:
     def save_copy_to_output(self, output_dir: Optional[Path] = None) -> None:
         """Snapshot to Output/ so the record survives a later fresh start."""
         import shutil
+        from .file_manager import run_snapshot_stamp
 
         output_dir = output_dir or Path("Output/RequirementStatus")
         output_dir.mkdir(parents=True, exist_ok=True)
-        now = datetime.now()
-        output_file = output_dir / f"reqstatus_{now.strftime('%m%d')}_{now.strftime('%I%p')}.log"
+        # Stamped with the run's start hour, so a run spanning an hour boundary
+        # keeps writing the same file instead of starting a second one.
+        output_file = output_dir / f"reqstatus_{run_snapshot_stamp()}.log"
 
         if self.log_path.exists():
             shutil.copy2(self.log_path, output_file)

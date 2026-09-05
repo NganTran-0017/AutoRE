@@ -100,11 +100,15 @@ def test_interpret_results_prompt_renders_with_the_audit():
         analyzer_results="", requirements_document=REQUIREMENTS,
         alloy_model=MODEL, regression_log="",
         ownership_audit=format_ownership_for_prompt(_audit()),
+        deterministic_diagnosis="  - 'R1R2' SCOPE VERDICT: still UNSAT at enlarged bounds",
         user_preferences="",
     )
     assert "E5_RequestProcessorAudit" in prompt
     # and the relocated clause landed in the section that diagnoses regressions
     assert "deleted deliberately" in prompt.lower()
+    # the measured diagnosis is delivered to the interpretation, with its rules
+    assert "SCOPE VERDICT: still UNSAT at enlarged bounds" in prompt
+    assert "READ THE DETERMINISTIC DIAGNOSIS FIRST" in prompt
 
 
 def test_vacuity_section_renders_with_the_audit():

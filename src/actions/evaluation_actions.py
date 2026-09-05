@@ -72,7 +72,8 @@ class InterpretResults(LessonAwareAction):
         self,
         analyzer_results: Dict[str, Any],
         requirements_document: str,
-        alloy_model: str
+        alloy_model: str,
+        deterministic_diagnosis: str = ""
     ) -> str:
         """
         Interpret analyzer results and identify issues.
@@ -81,6 +82,13 @@ class InterpretResults(LessonAwareAction):
             analyzer_results: Results from Alloy Analyzer
             requirements_document: Current requirements
             alloy_model: Current Alloy model code
+            deterministic_diagnosis: Measured evidence for persistent UNSAT
+                predicates - the scope sweep and the minimal blocking-fact set,
+                produced by re-running the Analyzer before this interpretation is
+                written. Empty when nothing has persisted far enough to diagnose.
+                Given here so the causal analysis is formed knowing what was
+                measured, instead of guessing at it and being checked against it
+                afterwards.
 
         Returns:
             Structured interpretation
@@ -121,6 +129,11 @@ class InterpretResults(LessonAwareAction):
             alloy_model=model_context,  # Use placeholder or full model
             regression_log=regression_log_str,
             ownership_audit=ownership_str,
+            deterministic_diagnosis=(
+                deterministic_diagnosis.strip() if deterministic_diagnosis
+                and deterministic_diagnosis.strip()
+                else "None - no issue has persisted long enough to be diagnosed empirically."
+            ),
             user_preferences=user_prefs
         )
 
@@ -330,15 +343,22 @@ class InterpretResults(LessonAwareAction):
             removal_log = getattr(self.context, "construct_removal_log", None)
             removals = removal_log.format_for_prompt() if removal_log else None
 
-            # From the previous iteration's localization - it runs after this
-            # action, so the current iteration's own join is not available yet.
+            # Localization runs BEFORE this action (workflow._prepare_semantic_
+            # escalation), so on an escalated iteration these were measured
+            # against the very model shown below. On a NON-escalated iteration it
+            # never ran, and the context still holds whatever the last escalated
+            # iteration left there - possibly many model rewrites ago. Withhold
+            # that rather than present it: the stamp decides.
             blockers = getattr(self.context, "unowned_blockers", None)
-            if not isinstance(blockers, dict):
+            measured_at = getattr(self.context, "unowned_blockers_iteration", None)
+            if not isinstance(blockers, dict) or measured_at != self.get_current_iteration():
                 blockers = {}
             streaks = getattr(self.context, "unowned_blocker_streaks", None)
-            if not isinstance(streaks, dict):
+            if not isinstance(streaks, dict) or not blockers:
                 streaks = {}
 
+            # How to read the finding is already in the InterpretResults
+            # procedure (step 1); no extra section is appended here.
             return format_ownership_for_prompt(audit, removals=removals,
                                                blockers=blockers, streaks=streaks)
         except Exception as e:
@@ -853,6 +873,17 @@ class GenerateSemanticFeedback(LessonAwareAction):
                 "{{persistence_status}}", persistence_status
             )
             prompt = prompt + "\n\n" + escalation_section
+
+        # How to resolve an unowned blocking fact, delivered whenever the finding
+        # is present - not folded into the escalation block, which only ships on
+        # escalated iterations while the response format asks for a decision per
+        # fact regardless.
+        blockers = getattr(self.context, "unowned_blockers", None)
+        measured_at = getattr(self.context, "unowned_blockers_iteration", None)
+        if blockers and measured_at == self.get_current_iteration():
+            prompt = prompt + "\n\n" + self.context.prompt_manager.get_section(
+                "Evaluator", "UnownedBlockingFacts"
+            )
 
         # Append the shared triage decision procedure so any verification-driven
         # requirement/constraint change is deduped, placed, and classified before

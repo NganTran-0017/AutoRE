@@ -1,9 +1,32 @@
 """File management utilities for requirements and models."""
 import os
+from datetime import datetime
 from pathlib import Path
 from typing import Optional, List
 import shutil
 import yaml
+
+
+# Every "save a copy to Output/" call used to stamp its filename with the hour of
+# that save, so a run lasting past an hour boundary split one run's snapshots
+# across two files (regression0902_01PM.log and regression0902_02PM.log were the
+# same run, saved at 13:21 and 14:06). The stamp names the RUN, not the moment of
+# the save: it is fixed when the process starts, so every snapshot a run takes
+# lands in - and overwrites - a single file per log.
+#
+# Set at import: src.utils.runtime_context imports this module, which src.workflow
+# imports in turn, so it is evaluated at process start, before any iteration runs.
+_RUN_STARTED_AT = datetime.now()
+
+
+def run_snapshot_stamp() -> str:
+    """
+    `MMDD_HHAM/PM` for the hour THIS RUN started, e.g. `0902_01PM`.
+
+    Shared by every Output/ snapshot filename so all of a run's logs carry one
+    stamp, and a long run does not fan out across hourly files.
+    """
+    return _RUN_STARTED_AT.strftime("%m%d_%I%p")
 
 
 class FileManager:
@@ -167,6 +190,25 @@ class FileManager:
         with open(filepath, 'w') as f:
             f.write(content)
         print(f"Alloy model saved to: {filepath}")
+        return filepath
+
+    def archive_diagnostic_model(self, content: str, iteration: int) -> Path:
+        """
+        Keep an RE Mode 3 model after its probes have reported (`Diagnostic__N.als`).
+
+        The lineage rolls back to N-1 once the verdicts are read, so this file is
+        the only record of what was actually executed - needed to audit a verdict
+        that later looks wrong. The prefix differs deliberately: `get_latest_alloy_model`
+        globs `AlloyModel__*.als` and parses the suffix as an int, so a variant name
+        under that prefix would break the lineage head.
+        """
+        from .alloy_model_validator import extract_alloy_code
+
+        content = extract_alloy_code(content, strip_generic_fence=True)
+
+        filepath = self.models_dir / f"Diagnostic__{iteration}.als"
+        with open(filepath, 'w') as f:
+            f.write(content)
         return filepath
 
     def load_alloy_model(self, iteration: int) -> Optional[str]:

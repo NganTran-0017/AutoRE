@@ -559,34 +559,26 @@ def track_blocker_persistence(
 
 
 def format_unowned_blockers(blockers: Dict[str, List[str]],
-                            streaks: Optional[Dict[str, int]] = None,
-                            stale: bool = False) -> str:
-    """Render the audit x localization join as a ranked finding.
+                            streaks: Optional[Dict[str, int]] = None) -> str:
+    """Render the audit x localization join as a ranked finding - DATA ONLY.
 
-    `stale=True` is for the interpretation prompt. Localization runs AFTER
-    InterpretResults in an iteration, so the list that prompt sees was computed
-    one iteration ago and against the model that step 8 has since rewritten. It
-    is a PRIOR there, not a measurement: the facts may be gone, renamed, or no
-    longer blocking. It also carries no decision mandate, because
-    ResponseFormatInterpretation has no section to record decisions in - that
-    belongs to the feedback step, which gets the fresh list.
+    How to resolve the finding is prompt text: it lives in the Evaluator's
+    `UnownedBlockingFacts` section, which the caller appends. Keeping it there
+    means the rules can be edited in the prompt file rather than in Python.
+
+    There is no "stale" variant. Localization runs BEFORE InterpretResults (see
+    workflow._prepare_semantic_escalation), so every list rendered here was
+    measured against the model the reader is looking at. A list that is NOT from
+    the current iteration is not labelled - it is withheld; the caller checks the
+    measurement stamp.
     """
     if not blockers:
         return ""
     streaks = streaks or {}
-    if stale:
-        lines = [
-            "UNOWNED BLOCKING FACTS (PRIOR - from the PREVIOUS iteration, measured "
-            "against the model as it stood BEFORE the last update). Treat as a lead "
-            "to check, not as established fact: each of these was an undeclared fact "
-            "proven to block a scenario, but the model has changed since."
-        ]
-    else:
-        lines = [
-            "UNOWNED BLOCKING FACTS - each of these constrains the model into UNSAT "
-            "while declaring no requirement. Resolve every one before proposing any "
-            "other repair:"
-        ]
+    lines = [
+        "UNOWNED BLOCKING FACTS - each constrains the model into UNSAT while "
+        "declaring no requirement:"
+    ]
     for fact, predicates in blockers.items():
         streak = streaks.get(fact, 1)
         age = (f" UNRESOLVED for {streak} consecutive iterations."
@@ -594,51 +586,10 @@ def format_unowned_blockers(blockers: Dict[str, List[str]],
         lines.append(
             f"  - {fact} blocks {', '.join(predicates)} and encodes no requirement.{age}"
         )
-    if stale:
-        lines.append(
-            "  Use this when mapping a blocking construct to a requirement: confirm "
-            "against the CURRENT model shown above that the fact still exists and still "
-            "declares nothing before relying on it, and say which of these you confirmed. "
-            "A fact that is still present and still undeclared is a leftover to remove or "
-            "declare - never an over-restrictive constraint to weaken. Do not propose "
-            "resolutions here; the repair step receives a freshly measured list."
-        )
-        return "\n".join(lines)
-    lines.append(
-        "  Choose ONE resolution per fact, by what the fact actually constrains: "
-        "behaviour the EXISTING system already guarantees -> declare the `E#` it encodes; "
-        "structural well-formedness (uniqueness of a key, totality of a relation, no "
-        "dangling reference) -> mark `//@req none:frame`; scope or universe setup -> "
-        "`//@req none:harness`; behaviour of the PROSPECTIVE component -> convert it to a "
-        "predicate/assertion, since a prospective requirement is never a fact; nothing you "
-        "can name -> delete it. Do not weaken it in place - a weakened fact that encodes no "
-        "requirement is still unowned, and it will block again."
-    )
-    lines.append(
-        f"  Record one entry per fact under `{BLOCKER_DECISION_HEADING}`. A fact you leave "
-        f"out of that section is not resolved, and will be flagged again next iteration."
-    )
-    # The EVIDENCE ALIGNMENT / STRATEGY block is appended to this directive
-    # AFTER this finding, so it reads as the later and more binding instruction.
-    # Without this line, REQUIREMENTS_DIAGNOSIS ("your decision MUST be escalate
-    # to requirement clarification") looks like it overrides the instruction to
-    # resolve these facts. It does not - the two answer different questions.
-    lines.append(
-        "  This obligation is independent of any STRATEGY line below: an undeclared fact "
-        "is a bookkeeping defect, not a requirements diagnosis and not a repair hypothesis. "
-        "Record the decisions under every strategy."
-    )
     persistent = sorted(f for f, n in streaks.items()
                         if n >= BLOCKER_ESCALATION_THRESHOLD and f in blockers)
     if persistent:
-        subject = ("This fact has" if len(persistent) == 1
-                   else f"These {len(persistent)} facts have")
-        lines.append(
-            f"  ESCALATION: {', '.join(persistent)}. {subject} survived a previous "
-            f"instruction to resolve them, so whatever was proposed last iteration did not "
-            f"work - do not repeat it. Pick a DIFFERENT resolution from the list above, and "
-            f"if none is defensible, delete the fact."
-        )
+        lines.append(f"  ESCALATION: {', '.join(persistent)}.")
     return "\n".join(lines)
 
 
@@ -719,10 +670,9 @@ def format_ownership_for_prompt(audit: Optional[Dict[str, Any]],
         )
 
     # Highest-signal finding first: proven to block, proven to own nothing.
-    # stale=True: this block feeds the interpretation prompts, which run BEFORE
-    # this iteration's localization - so the list here is always one iteration
-    # behind, and behind a model update.
-    joined = format_unowned_blockers(blockers or {}, streaks, stale=True)
+    # The caller only passes `blockers` when they were measured THIS iteration,
+    # so this is current evidence about the model shown alongside it.
+    joined = format_unowned_blockers(blockers or {}, streaks)
     if joined:
         block = joined + "\n\n" + block
 

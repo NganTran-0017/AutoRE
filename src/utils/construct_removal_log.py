@@ -15,7 +15,6 @@ to Output/) so the three audit logs behave identically.
 
 import json
 from dataclasses import dataclass, field
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -158,12 +157,14 @@ class ConstructRemovalLog:
         """Save a copy to Output/ConstructRemovalLog/ so the record survives
         even if memory/ is cleared on a later fresh start."""
         import shutil
+        from .file_manager import run_snapshot_stamp
 
         output_dir = output_dir or Path("Output/ConstructRemovalLog")
         output_dir.mkdir(parents=True, exist_ok=True)
 
-        now = datetime.now()
-        output_file = output_dir / f"removals_{now.strftime('%m%d')}_{now.strftime('%I%p')}.log"
+        # Stamped with the run's start hour, so a run spanning an hour boundary
+        # keeps writing the same file instead of starting a second one.
+        output_file = output_dir / f"removals_{run_snapshot_stamp()}.log"
 
         if self.log_path.exists():
             shutil.copy2(self.log_path, output_file)

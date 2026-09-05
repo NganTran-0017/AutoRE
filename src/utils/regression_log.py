@@ -96,7 +96,10 @@ class RegressionLogEntry:
     promoted_assumptions: Optional[List[str]] = None  # Cumulative set of assumption predicates (A1, A2, ...) promoted to `fact A_k` as of this iteration. Per MODELING DISCIPLINE, an assumption is auto-promoted after >=2 consecutive SAT iterations; a revert (promotion broke baseline) removes it from the set.
     kind: str = "repair"  # "repair" (the RE attempted a fix) or "diagnostic" (RE Mode 3: the RE added probes to MEASURE, attempting no fix). A diagnostic entry is never listed as an attempted fix and never advances persistence - counting it would make careful diagnosis look like repeated failure.
     diagnostic_execution: Optional[str] = None  # Mode 3 only: the RE's per-plan-item execution report (which experiment, which probe, executed yes/no + reason). Also summarized into fix_intent, which must never be blank.
+    diagnostic_dropped: Optional[str] = None  # Plan items the guard rails removed, with what the deterministic diagnosis already measured about each. Recorded even when the drops emptied the plan and the iteration fell back to an ordinary repair - that is exactly the case where nothing else carries them, and the Evaluator would otherwise re-propose the same experiment.
     diagnostic_plan: Optional[List[Dict[str, str]]] = None  # Mode 3 only: the MANIFEST the probes were written from (construct, hypothesis, level, reading). Persisted because the readback must know what was SUPPOSED to run - a probe that was never written produces no analyzer row, and without the manifest that silence is indistinguishable from UNSAT.
+    diagnostic_control: Optional[str] = None  # Mode 3 only: the CONTROL line from the diff check. Mode 3 permits additions only; if the RE edited anything else, the verdicts were measured against a model nobody approved and are void. Rolling the model back does not undo that - the analyzer already ran - so the verdicts must carry their own trust flag.
+    diagnostic_probe_bodies: Optional[Dict[str, str]] = None  # Mode 3 only: probe name -> source. The declared reading is the RE's CLAIM about what a probe altered; the body is the evidence. The probes are rolled out of the model before the next iteration reads it, so this is the only place they survive.
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
 
     def to_dict(self) -> Dict[str, Any]:
@@ -127,6 +130,9 @@ class RegressionLogEntry:
             "kind": self.kind,
             "diagnostic_execution": self.diagnostic_execution,
             "diagnostic_plan": self.diagnostic_plan,
+            "diagnostic_dropped": self.diagnostic_dropped,
+            "diagnostic_control": self.diagnostic_control,
+            "diagnostic_probe_bodies": self.diagnostic_probe_bodies,
             "timestamp": self.timestamp
         }
 
@@ -159,6 +165,9 @@ class RegressionLogEntry:
             kind=data.get("kind", "repair"),
             diagnostic_execution=data.get("diagnostic_execution"),
             diagnostic_plan=data.get("diagnostic_plan"),
+            diagnostic_dropped=data.get("diagnostic_dropped"),
+            diagnostic_control=data.get("diagnostic_control"),
+            diagnostic_probe_bodies=data.get("diagnostic_probe_bodies"),
             timestamp=data.get("timestamp", datetime.now().isoformat())
         )
 
@@ -229,21 +238,19 @@ class RegressionLog:
         Args:
             output_dir: Optional custom output directory (defaults to Output/RegressionLog/)
         """
-        from datetime import datetime
         import shutil
-        
+        from .file_manager import run_snapshot_stamp
+
         # Default output directory
         if output_dir is None:
             output_dir = Path("Output/RegressionLog")
-        
+
         # Create directory if it doesn't exist
         output_dir.mkdir(parents=True, exist_ok=True)
-        
-        # Generate filename with MMDD_HH(AM/PM) format
-        now = datetime.now()
-        date_part = now.strftime("%m%d")  # MMDD
-        hour_part = now.strftime("%I%p")  # HH in 12-hour format + AM/PM
-        output_file = output_dir / f"regression{date_part}_{hour_part}.log"
+
+        # MMDD_HH(AM/PM) of the RUN's start hour, not of this save - one run
+        # writes one file, however many hours it lasts or saves it takes.
+        output_file = output_dir / f"regression{run_snapshot_stamp()}.log"
         
         # Copy the current log file if it exists
         if self.log_path.exists():
@@ -503,6 +510,14 @@ class RegressionLog:
                 verdicts = format_probe_verdicts(entry)
                 if verdicts:
                     lines.append(verdicts)
+                # What the RE reports it DID, beside what the analyzer measured.
+                # A skipped item's stated reason lives only here - the verdict
+                # table can say an item did not run, never why.
+                if entry.diagnostic_execution:
+                    lines.append("Diagnostic execution report (from the RE):")
+                    lines.append(entry.diagnostic_execution)
+            if getattr(entry, "diagnostic_dropped", None):
+                lines.append(entry.diagnostic_dropped)
             lines.append(f"Fix Intent: {entry.fix_intent}")
             lines.append(f"Source: {entry.source_ref}")
 
@@ -747,6 +762,14 @@ class RegressionLog:
                 verdicts = format_probe_verdicts(entry)
                 if verdicts:
                     lines.append(verdicts)
+                # What the RE reports it DID, beside what the analyzer measured.
+                # A skipped item's stated reason lives only here - the verdict
+                # table can say an item did not run, never why.
+                if entry.diagnostic_execution:
+                    lines.append("Diagnostic execution report (from the RE):")
+                    lines.append(entry.diagnostic_execution)
+            if getattr(entry, "diagnostic_dropped", None):
+                lines.append(entry.diagnostic_dropped)
             lines.append(f"Fix Intent: {entry.fix_intent}")
             lines.append(f"Source: {entry.source_ref}")
             
@@ -1538,7 +1561,11 @@ def format_probe_verdicts(entry: Any) -> str:
             satisfied=getattr(result, "satisfied_predicates", None) or [],
             unsatisfied=getattr(result, "unsatisfied_predicates", None) or [],
         )
-        return build_probe_verdict_block(readback)
+        return build_probe_verdict_block(
+            readback,
+            control=getattr(entry, "diagnostic_control", None),
+            probe_bodies=getattr(entry, "diagnostic_probe_bodies", None),
+        )
     except Exception:
         return ""
 

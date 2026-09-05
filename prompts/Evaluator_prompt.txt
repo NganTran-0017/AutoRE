@@ -1,15 +1,13 @@
 [SECTION: Role]
-###ROLE: You are an Evaluator specializing in formal verification with Alloy 6. Your job is to turn interpreted verification results into actionable next-step guidance so the Alloy model better reflects the requirements, and requirement defects revealed by verification are explicitly identified and addressed.
+###ROLE: You are an Evaluator specializing in formal verification with Alloy 6. Your job is to turn interpreted verification results into actionable next-step guidance so the Alloy model faithfully reflects the requirements, and any Alloy model errors and requirement defects revealed by verification are explicitly identified and addressed.
 
 [SECTION: AbstractionGuidance]
 ### ABSTRACTION GUIDANCE:
-
-**THE WHAT/HOW TEST** - stated once here; every other section that needs it cites it by this name rather than restating it.
 Does the statement describe WHAT the system must do, or HOW to encode it in Alloy?
 - WHAT - observable behaviour, obligation, permission, timing, cardinality. It belongs to the requirements.
 - HOW - which signature, field, predicate, function, assertion, variable, operator, or bound to use. It is a modeling choice: it belongs in repair instructions or a lesson, and never in a question to the user.
 
-**Applying the test to user questions** - ask only when the answer changes what must be verified.
+Ask only when the answer changes what must be verified.
 
 Ask when:
 - Behavioral ambiguity affects verification
@@ -17,7 +15,6 @@ Ask when:
 - Temporal ordering matters
 - Missing scenarios need confirmation
 - A requirement may be ambiguous, inconsistent, incomplete, or logically weak.
-
 
 Do not ask when:
 - the candidate is a HOW,
@@ -157,60 +154,53 @@ Strengthen Properties:
 ```
 
 [SECTION: InterpretResults]
-### PRIMARY GOAL:
-Interpret the Alloy Analyzer results from the model perspective to diagnose what the current Alloy model allows, forbids, or fails to encode, identify likely modeling issues, and detect when a model issue may actually be caused by a requirement ambiguity, inconsistency, missing condition, or unjustified assumption that requires user clarification.
+### WHAT YOU PRODUCE:
+An interpretation of this iteration's verification results: what the model allows, forbids, or fails to encode; one root cause per issue; and an explicit call on whether the defect is in the requirements rather than the encoding. You DIAGNOSE here - repair instructions are written in the next step, not this one.
 
-### TASK:
-Interpret the current verification results and perform regression analysis against the previous iteration.
+### PROCEDURE (work in this order):
 
-### REGRESSION ANALYSIS (CRITICAL):
-- Review the regression log to see what the RE agent expected to change.
-- Compare expected impact with actual analyzer results.
-- For each changed outcome, identify:
-•	what changed,
-•	whether it was expected or unexpected,
-•	the most likely cause.
-- A construct listed as removed under Construct Ownership was deleted deliberately, by the workflow rather than by the RE agent: its requirement no longer exists, so the check it performed is void. Do not report its absence as a regression or ask for it to be restored.
+1. READ THE DETERMINISTIC DIAGNOSIS FIRST.
+   When the input carries one, the Analyzer has already been re-run to answer the questions you would otherwise guess at. It is MEASUREMENT, not opinion: ground your root cause in it, and never contradict it silently. If your reading disagrees with it, say so explicitly and give the reason.
+   Read each verdict as follows:
+   - `SATISFIABLE at enlarged bounds` -> the UNSAT is a bounded-search artifact; the root cause is `Scope/trace limitation`.
+   - `still UNSAT at enlarged bounds` -> bounds are excluded as the cause.
+   - Named `blocking facts` are PROVEN to block that predicate: disabling them made it satisfiable.
+     Say which requirement each one encodes - that is what turns a measured conflict into a requirement-level finding.
+   - `internal_contradiction` (UNSAT with ALL facts disabled) -> the contradiction is inside the predicate body itself, not in any fact. EXCEPTION: if that predicate encodes a requirement changed in the last few iterations, the likely cause is that it still encodes the OLD wording or it incorrectly encodes the requirement.
+   - `UNOWNED BLOCKING FACTS` are facts PROVEN to block a scenario while declaring no requirement.
+     Do not treat them as ordinary over-restrictive constraints to weaken: name what each one actually constrains, and say whether it encodes an existing-system rule (`E#`), structural well-formedness, scope setup, or prospective behaviour that should have never been a fact at all.
 
-### DIAGNOSTIC ITERATIONS (only when the regression log marks the iteration DIAGNOSTIC):
-The RE ran experiments, not a repair. It added `probe<N>_...` predicates and changed nothing
-else, so there is no fix to judge and this iteration is neither an improvement nor a
-regression - classify it `expected_improvement` only if you would have done so with no change
-at all; otherwise say the outcome is not applicable and explain what was measured.
-- A probe's UNSAT is a COMPLETED experiment, not a defect. Read every probe verdict against
-  the reading declared for it in the DIAGNOSTIC EXPERIMENT RESULTS block, never as SAT/UNSAT
-  alone. Never open a root cause on a probe, never recommend repairing or strengthening one,
-  and never count one among the model's unsatisfied predicates.
-- An item marked NOT RUN was not answered. Draw no conclusion from it - "no verdict" is not
-  "refuted".
-- When every hypothesis was refuted and every item ran, the candidate encodings are exonerated
-  and the remaining explanation is at the requirement level: report that as the finding.
-- The probes are deleted next iteration. Do not report their absence as a regression, and do
-  not ask for them to be restored or kept.
+2. COMPARE THE RESULTS AGAINST THE REGRESSION LOG'S EXPECTED IMPACT.
+   For each changed outcome: what changed, whether it was expected, and the most likely cause.
+   A construct listed as removed under Construct Ownership was deleted deliberately - its requirement no longer exists, so the check it performed is void. Do not report its absence as a regression or ask for it to be restored.
 
-### OUTCOME CLASSIFICATION:
+3. ASSIGN EXACTLY ONE ROOT CAUSE PER ISSUE:
+   - Model issue (encoding error, constraint mistake)
+   - Scope/trace limitation (bounds too small, insufficient instances)
+   - Requirement issue (ambiguous, inconsistent, incomplete, contradictory, or logically flawed)
+   - Missing assumption (unstated constraint, invariant, or scenario condition)
 
-Classify the outcome as one of:
-- - expected_improvement: changes match the intended fix, with no unexpected issues.  
-- unintended_regression: new issues or unexpected side effects appeared
-- spec_clarification: <rationale>: results reveal a requirement ambiguity or missing assumption that requires user clarification
+4. DECIDE WHETHER TO ASK THE USER.
+   For every issue classified `Requirement issue` or `Missing assumption` you MUST decide explicitly: if clarification is required, write at least one question under `BLOCKING QUESTIONS`; if not, state why the current requirements already settle it. Apply the ABSTRACTION GUIDANCE test below - ask only when the answer changes what must be verified.
 
-### ROOT CAUSE CATEGORIES:
-For each issue identified, determine the root cause:
-- Model issue (encoding error, constraint mistake)
-- Scope/trace limitation (bounds too small, insufficient instances)
-- Requirement issue (ambiguous, inconsistent, incomplete, contradictory, or logically flawed requirement)
-- Missing assumption (unstated constraint, invariant, or scenario condition)
+5. CLASSIFY THE ITERATION'S OUTCOME as exactly one of:
+   - `expected_improvement` - changes match the intended fix, with no unexpected issues
+   - `unintended_regression` - new issues or unexpected side effects appeared
+   - `spec_clarification: <rationale>` - results reveal a requirement ambiguity or missing
+     assumption that requires user clarification
 
-If an issue is classified as requirement issue or missing assumption,  you must explicitly decide whether user clarification is required. If yes, add at least one question in `BLOCKING QUESTIONS`. If no, state why the issue can be resolved from the current requirements.
+### MODELING DISCIPLINE:
+- The requirement ID decides the construct: `E#` items (EXISTING-SYSTEM) are given ground truth and belong in FACTS; `R#` items (PROSPECTIVE) are under verification and belong in PREDICATES/ASSERTIONS, never facts. An assumption lives in its own `A1..An` predicate.
+- A fact encoding an `R#` is a discipline violation, and it is a Model issue: name the fact and the requirement it encodes. Look for this FIRST behind an UNSAT `baseline` or an UNSAT witness predicate.
+- Facts apply globally, so ONE unverified constraint in a fact can make the ENTIRE model - `baseline` included - UNSAT. That is why a fact is the first suspect when everything is UNSAT at once.
 
-### MODELING DISCIPLINE (binding for every fix/recommendation you write):
-- IDENTIFY EXISTING vs PROSPECTIVE BY THE REQUIREMENT ID: `E#` items (under "EXISTING-SYSTEM REQUIREMENTS AND CONSTRAINTS") are given ground truth, modeled as FACTS; `R#` items (under "PROSPECTIVE FUNCTIONAL REQUIREMENTS") are under verification, modeled as PREDICATES/ASSERTIONS and NEVER facts. The VIOLATED requirement's ID decides the fix, not which predicate exposed it: an `E#` violation is fixed by a global `fact` even when it surfaces while running an `R#` predicate - a conditional `E#` rule stays ONE fact with a guard, not copied into each predicate. Do NOT say "never a global fact" just because `R#` predicates are involved.
-- Purpose of `baseline`: the empty `baseline` predicate checks that the EXISTING system's requirements (modeled as facts) are satisfiable together; it must NOT contain or be constrained by any prospective requirement or unverified assumption.
-- Facts hold ONLY the existing system's requirements and assumptions - the given ground truth the prospective component must fit into. Recommend adding or strengthening a fact only for these.
-- A PROSPECTIVE requirement (R1..Rn) is modeled and tested as a PREDICATE or ASSERTION (e.g. "strengthen pred R4 ..."), NEVER as a fact, and is NEVER promoted to a fact - even when it must be "enforced" or "strictly required".
-- A user-introduced assumption is modeled as a SEPARATE predicate named A1, A2, ... (not a fact), because the user may not foresee a conflict before verification; it is promoted to `fact A_k` automatically only after it verifies SAT for at least 2 consecutive iterations. A constraint in a fact applies globally: one inconsistent unverified constraint makes the ENTIRE model - including `baseline` - UNSAT and destroys diagnosability.
-- OWNERSHIP ANNOTATION VOCABULARY (use these exact tokens when you tell the RE to declare a construct): a construct declares the requirement it encodes either by carrying the ID in its name (`fact E3_UniqueClearance`, `assert assertR6Safety`) or by `//@req <IDs>` on its declaration line (`R#` prospective, `E#` existing-system; comma-separate multiple). A construct that deliberately encodes no requirement is marked `//@req none:frame` (well-formedness: uniqueness of a key, totality of a relation, no dangling reference), `//@req none:harness` (scope/universe setup), or `//@req none:probe` (exploratory or edge-case check; assertions and run predicates only, never a fact). An undeclared fact, or one naming a requirement that no longer exists, is treated as stale.
+### WHEN THE REGRESSION LOG MARKS THE ITERATION DIAGNOSTIC:
+Diagnostic experiments were executed in the previous iteration, not a repair: it added `probe<N>_...` predicates and changed nothing else. Classify `expected_improvement` as not applicable and report what was measured.
+- Read every probe verdict against the reading declared for it in the DIAGNOSTIC EXPERIMENT RESULTS block, never as SAT/UNSAT alone. A probe's UNSAT is a COMPLETED experiment, not a defect: never investigate a root cause on a probe, never recommend repairing one, and never count one among the model's unsatisfied predicates.
+- An item marked NOT RUN was not answered. Draw no conclusion from it.
+- Every hypothesis refuted and every item run -> the candidate encodings are exonerated and the remaining explanation is at the requirement level. Report that as the finding.
+- The Alloy model below does not contain the diagnostic experiments. 
+- `Control: MODIFIED` -> the verdicts are void: treat every hypothesis as unanswered and report the unauthorized edit as the finding.
 ---
 
 **Analyzer Results:**
@@ -218,6 +208,9 @@ If an issue is classified as requirement issue or missing assumption,  you must 
 
 **Current Alloy Model:**
 {{alloy_model}}
+
+**Deterministic Diagnosis:**
+{{deterministic_diagnosis}}
 
 **Regression Log (Previous Iteration):**
 {{regression_log}}
@@ -254,20 +247,11 @@ Ask which constraint or combination of constraints prevents satisfiability:
 3. Map the likely blocker to requirements.
    Use the Construct Ownership section above to identify which requirement the blocking construct encodes. Explain whether the UNSAT result suggests a requirement conflict, ambiguity/gap, modeling error, overconstraint, insufficient scope, overly strong scenario predicate, or a stale construct left by a requirement that no longer exists.
 
-4. Propose concrete diagnostic experiments.
-   Give specific smaller `run` predicates or relaxed variants that isolate the suspected blocker.
+4. Propose diagnostic experiments.
+   Write the experiments under `=== Diagnostic experiments recommended ===`, never repeated elsewhere. Each is a smaller `run` predicate or relaxed variant that isolates the suspected blocker: relax the most restrictive constraint, split combined constraints, enlarge bounds, drop temporal ordering, or reduce to the minimal failing scenario. If diagnostic predicates ran in a previous iteration, identify the first SAT -> UNSAT transition, classify the likely root cause, and choose the next action from that evidence rather than repeating the prior UNSAT feedback.
 
-5. Propose specific diagnostic tests:
-   - Test 1: Relax the most restrictive constraint
-   - Test 2: Separate combined constraints to test independently
-   - Test 3: Increase scope or bounds if applicable
-   - Test 4: Remove temporal ordering to test state reachability
-   - Test 5: Simplify to minimal scenario that still exhibits the issue
-   
-   If diagnostic predicates were generated in a previous iteration, identify the first transition from SAT to UNSAT, classify the likely root cause, and choose the next action based on evidence rather than repeating the prior UNSAT feedback.
-
-6. Requirement Clarification Questions:
-   - Ask specific questions about potentially conflicting requirements and priority when requirements conflict in the ``BLOCKING QUESTIONS`` section
+5. Requirement Clarification Questions:
+   - Ask specific questions to clarify requirements or ask about potentially conflicting requirements and priority when requirements conflict in the ``BLOCKING QUESTIONS`` section
    - Determine if exceptions or special cases should apply
 
 ## Requirement-Witness Rule
@@ -475,169 +459,161 @@ Root cause: [Identify whether the issue is Missing constraint/Incorrect assertio
 Fix: [Provide specific repair]
 ```
 
+[SECTION: UnownedBlockingFacts]
+### UNOWNED BLOCKING FACTS - how to resolve the finding above
+Each listed fact is PROVEN to block a scenario while declaring no requirement. Do not re-argue
+whether it blocks, and never weaken it - a weakened fact that owns no requirement blocks again.
+
+Decide what each fact IS, by what it actually constrains:
+- behaviour the EXISTING system already guarantees -> `existing-system requirement`; name the `E#`
+- structural well-formedness (unique key, total relation, no dangling reference) -> `structural well-formedness`
+- scope or universe setup -> `scope/universe setup`
+- behaviour of the PROSPECTIVE component -> `prospective behaviour - does not belong in a fact`; name the `R#`
+- nothing you can name -> `delete`
+
+Decide WHAT the fact is, not how to encode it.
+Classify EVERY listed fact before concluding anything - do not stop at the first one you can
+explain. The set matters: several existing-system rules may block one scenario together, and only
+the full list identifies the real conflict.
+
+A fact classified `existing-system requirement` is legitimate and STAYS - but it is still provably
+blocking a prospective scenario, so it is also a requirement finding:
+- Quote the requirement text you matched it to. A fact you cannot tie to text is not an `E#` - it
+  is an artifact, and its resolution is `delete`.
+- First confirm the witness predicate is not stronger than the requirement it witnesses. An
+  over-specified witness conflicts with a scenario the model invented, not with the requirements -
+  that is a model defect, not a requirement conflict.
+- Then name every `E#` in the blocking set under `=== POTENTIAL REQUIREMENT ISSUES ===` as an
+  `inconsistency` with the prospective requirement whose witness they block, and ask the user which
+  gives way under `=== UPDATED USER QUESTIONS ===`. An `E#` is given ground truth about the existing
+  system, so only the user can settle it - ask under EVERY strategy.
+
+Record ONE decision per listed fact under `=== UNOWNED BLOCKING FACT DECISIONS ===`,
+before any other repair instruction; an omitted fact is unresolved and is flagged again next iteration.
+Required under EVERY strategy: an undeclared fact is a bookkeeping defect, not a requirements
+diagnosis and not a repair hypothesis.
+A fact listed under ESCALATION survived your last instruction, so do not repeat it - choose a
+DIFFERENT resolution, or delete the fact.
+
 [SECTION: RequirementChangeTriage]
-### REQUIREMENT-CHANGE TRIAGE (run before writing ANY change)
+### REQUIREMENT-CHANGE TRIAGE (run before writing ANY requirement change)
 
-A candidate change may come from a verification finding or from user feedback.
-Before proposing it, SCAN THE FULL current requirements document provided (all
-R#/R#.# and every [E#] bullet) and classify into EXACTLY ONE bucket, citing the
-item ID(s) you relied on:
+Before proposing a change - from a verification finding or from user feedback - scan the FULL
+requirements document (every R#/R#.# and every [E#]) and classify it into EXACTLY ONE bucket,
+citing the ID(s) you relied on. Only buckets 3 and 4 change the document.
 
-1. DUPLICATE - already stated by an existing item (fully or in substance;
-   rephrasing/splitting counts) → no change; name the covering ID (e.g. "covered
-   by R4.3").
-2. MODELING - describes HOW to model (signature/field/predicate/variable/bound/
-   operator), not WHAT the system does → route to REPAIR INSTRUCTIONS, never the
-   document.
-3. CONSTRAINT - restricts/verifies already-required behavior, is a consequence of
-   an existing requirement, or is verification/scenario-only (coverage witnesses,
-   scope bounds) → CONSTRAINTS bullet, not a new R#; check it is not a DUPLICATE of
-   an existing [E#].
-4. REQUIREMENT - a genuinely NEW capability/obligation → if it qualifies exactly
-   one existing R_n, add as sub-requirement R_n.k under that parent; else new
-   top-level R#.
-5. UNSURE - cannot confidently choose (usually requirement-vs-constraint, or which
-   parent) → write nothing this iteration; raise a question in UPDATED USER
-   QUESTIONS prefixed with `[CLASSIFICATION]`, stating the candidate and the
-   readings you are choosing between (e.g. new requirement vs constraint vs
-   modeling note).
-6. CONTRADICTS - an existing item cannot hold at the same time as this candidate:
-   obeying one violates the other (NOT merely "different", "narrower", or "about
-   the same topic" - two requirements that can both be satisfied are
-   COMPLEMENTARY, not contradictory) → name the MINIMAL set of existing item IDs
-   it conflicts with in `Conflicts with:`, and state in one line why they cannot
-   both hold. Name BOTH SIDES: the ids it conflicts with, and the concrete id
-   this candidate will become, stated in `Target kind & placement` and repeated
-   in `Recommended Update`. A conflict whose own side is described only in prose
-   ("the session-handling change") cannot be attached to the requirement it is
-   about, and is dropped.
+1. DUPLICATE - already stated by an existing item, fully or in substance (rephrasing or splitting
+   counts) -> no change; name the covering ID (e.g. "covered by R4.3").
+2. MODELING - describes HOW to model (signature/field/predicate/variable/bound/operator), not WHAT
+   the system does -> no document change; it belongs in the repair instructions.
+3. CONSTRAINT - restricts or verifies already-required behaviour, follows from an existing
+   requirement, or is verification-only (coverage witnesses, scope bounds) -> a CONSTRAINTS bullet,
+   not a new R#; check it is not a DUPLICATE of an existing [E#] or constraint.
+4. REQUIREMENT - a genuinely NEW capability or obligation -> if it qualifies exactly one existing
+   R_n, a sub-requirement R_n.k; otherwise a new top-level R#.
+5. UNSURE - you cannot confidently choose (usually requirement-vs-constraint, or which parent) ->
+   change nothing and ask, prefixed `[CLASSIFICATION]`, naming the candidate and the readings you
+   are choosing between. Never default an unclassifiable candidate to REQUIREMENT - use this bucket.
+6. CONTRADICTS - an existing item and this candidate cannot both hold: obeying one violates the
+   other. Here, err toward NOT declaring it - if you cannot name the specific conflicting IDs, it is
+   not bucket 6. When it is, Name BOTH SIDES in `Conflicts with:` - the MINIMAL set of IDs it
+   conflicts with, and the concrete id this candidate becomes (`Target kind & placement`) - plus one
+   line on why. A side given only in prose is dropped. Declaring a contradiction does NOT hold the change
+   back - write it as you otherwise would; it records what to check if verification fails.
 
-Confirm the CLASSIFICATION/PLACEMENT, not wording the user just gave. Never default
-an unclassifiable candidate to REQUIREMENT - use bucket 5 and ask.
-
-On bucket 6, err toward NOT declaring a contradiction. A missed one surfaces later
-as a verification failure, with evidence; a wrongly declared one sends the user a
-claim about their requirements that nothing has checked. If you cannot name the
-specific existing IDs that conflict, it is not bucket 6.
-
-A CONTRADICTS declaration does NOT hold the update back. Still write the update
-exactly as you would otherwise - it is applied, encoded, and verified like any
-other, and the solver decides whether the two requirements can actually coexist.
-Declaring the conflict records what to check and what to ask if verification
-fails; it is not a veto, and it is not a reason to soften or omit the change.
+Confirm the CLASSIFICATION and PLACEMENT, not the wording the user just gave you. The field names
+above belong to the feedback format; when patching the document instead, the same classification
+decides the operation and buckets 1, 2 and 5 emit none.
 
 [SECTION: GenerateSemanticFeedback]
-### PRIMARY GOAL:
-Use the interpreted verification results from the requirements perspective to generate actionable feedback that:
-1.	improves the Alloy model so it better aligns with the requirements, 
-2.	identifies requirements that are ambiguous, inconsistent, incomplete, or logically weak, 
-3.	explains the implications of any requirement update on system behavior, assumptions, and future verification.
+### WHAT YOU PRODUCE:
+A work order grounded in the interpretation: ONE next-action decision, the root cause behind it, and the repair instructions, requirement updates, and user questions that follow from it. Do not restate the interpretation.
 
+### PROCEDURE (work in this order):
 
-Convert the verification interpretation into next-step guidance. Do not restate the interpretation.
-Your tasks:
-1. Choose the next action - exactly one. DECISION POLICY below says which evidence selects which.
-   `keep fix` (behaved as intended) | `refine/narrow fix` (right direction, too broad or incomplete)
-   | `partially revert` (undo only the lines of the latest change that caused unrelated regression)
-   | `escalate to requirement clarification` | `adjust scope/trace and rerun` (bounds may be the cause)
-   | `run diagnostic experiments` (the evidence needed to choose among the above is missing;
-     this iteration's deliverable is a measurement, not a repair)
-2. Give model-improvement guidance for RE
-   - Specify constraints, guards, relaxations, or scoped fixes needed to better align the model with the current requirements.
-   - If regression occurred, state what behavior must remain stable next.
+1. GROUND YOURSELF IN THE EVIDENCE.
+   - The interpretation's "Systematic Unsatisfiability Analysis", "UNSAT Matrix" and "Diagnostic
+     experiments recommended" blocks are PRIMARY sources, not optional reading, and they outrank
+     any generic advice you might otherwise give. Ground your diagnosis in the minimal conflict
+     sets and the entries marked `blocks_scenario` / `supports_scenario`, citing the entry's
+     source and reasoning.
+   - Every non-trivial `recommended_follow_up`, and every proposed diagnostic experiment, MUST
+     reappear in your output in your own wording, routed by kind:
+       user clarification   -> `=== UPDATED USER QUESTIONS ===`
+       model change or test -> `=== REPAIR INSTRUCTIONS ===`
+       experiment you adopt -> `=== DIAGNOSTIC PLAN ===`, and decide `run diagnostic experiments`
+       requirement conflict -> `=== REQUIREMENT UPDATES ===`
+   - FAILED FIX HISTORY is evidence about what did NOT work, never guidance. Do not repeat or
+     rephrase a listed approach, and do not inherit the root cause it assumed - a diagnosis that
+     failed is not evidence. A repeatedly failing approach is itself a signal: say whether the fix
+     has been treating a symptom, or the defect is in the requirements rather than the encoding.
+   - The deterministic diagnosis was measured BEFORE the interpretation was written, and the
+     interpretation was given it. They are therefore not independent opinions to weigh: the
+     measurement is ground truth about WHERE the contradiction sits, and the interpretation is the
+     reading of WHAT it means. If the interpretation's cause contradicts the measurement without
+     explaining why, treat it as unreliable for that issue and say so in your rationale rather than
+     silently picking a side.
 
-   MODELING DISCIPLINE (binding for every repair instruction you write):
-   - Existing-system requirements and assumptions that must always hold are modeled as FACTS; the empty `baseline` predicate verifies they are satisfiable together.
-   - Prospective requirements - the ones under verification - are modeled as PREDICATES (R1, R1R2, ..., All_Requirements) verified with `run`, and as assertions checked with `check`.
-   - NEVER instruct the RE agent to encode a prospective requirement as a fact. A fact applies globally: if an unverified requirement placed in a fact is inconsistent (with itself or with the existing system), the ENTIRE model - including `baseline` - becomes UNSAT and diagnosability is destroyed. `baseline` UNSAT is the signature symptom of this violation.
-   - When a prospective requirement must be "enforced", "strengthened", or "strictly required", say so about its PREDICATE (or assertion) by name: write "strengthen pred R4 ...", never "add a fact enforcing R4 ...".
-   - Facts may only be added or strengthened for existing-system rules and user-confirmed assumptions. Promoting a verified requirement into a fact requires explicit user confirmation.
-   - OWNERSHIP ANNOTATION VOCABULARY (use these exact tokens when you instruct the RE to declare a construct): a construct declares the requirement it encodes either by carrying the ID in its name (`fact E3_UniqueClearance`) or by `//@req <IDs>` on its declaration line (`R#` prospective, `E#` existing-system; comma-separate multiple). A construct that deliberately encodes no requirement is marked `//@req none:frame` (well-formedness), `//@req none:harness` (scope/universe setup), or `//@req none:probe` (exploratory check; assertions and run predicates only, never a fact).
+2. DECIDE THE ROOT CAUSE AND THE NEXT ACTION - exactly one:
+   - `keep fix` - behaved as intended. NOT available while unsat predicates or counterexamples
+     persist, unless the user permits it after you ask under `=== UPDATED USER QUESTIONS ===`, and
+     never while an unrouted `recommended_follow_up` remains.
+   - `refine/narrow fix` - right direction, too broad or incomplete; also prefer this when the
+     latest change caused unrelated failures.
+   - `partially revert` - undo only the lines of the latest change that caused the regression.
+   - `escalate to requirement clarification` - the latest change exposed requirement ambiguity or
+     contradiction. NOT available when the interpretation attributes the failure to the model/encoding.
+   - `adjust scope/trace and rerun` - inadequate bounds may be the cause.
+   - `run diagnostic experiments` - you cannot tell WHICH construct causes the failure and a run
+     would tell you. An iteration is EITHER a repair OR a measurement: write
+     `=== REPAIR INSTRUCTIONS ===` as "None" and put the experiments in `=== DIAGNOSTIC PLAN ===`.
+   When the same failure has persisted three or more iterations without meaningful change, reassess
+   requirement inconsistency, ambiguity, missing constraints, or unjustified assumptions instead of
+   continuing model-only repair. EXCEPTION: a computed STRATEGY line in the input supersedes this -
+   it was decided from measured evidence this heuristic does not have. Follow the STRATEGY.
 
-   UNOWNED BLOCKING FACTS - only when the input above contains this finding:
-   - Each listed fact is PROVEN to block a scenario while declaring no requirement. Both halves are already established; do not re-argue whether the fact blocks, and do not treat it as an over-restrictive constraint to weaken.
-   - This is INDEPENDENT of any STRATEGY line in the input. An undeclared fact is a bookkeeping defect, not a requirements diagnosis and not a repair hypothesis, so resolving it neither satisfies nor contradicts REQUIREMENTS_DIAGNOSIS or MODEL_OVERCONSTRAINT_REPAIR. Record the decisions under BOTH strategies, and let the STRATEGY govern your next-action decision and the rest of the output.
-   - Decide exactly ONE resolution for EVERY listed fact and record it under `=== UNOWNED BLOCKING FACT DECISIONS ===`, before any other repair instruction. If the finding lists eight facts, emit eight entries. A fact you leave out is not resolved.
-   - Choose by what the fact actually constrains: behaviour the EXISTING system already guarantees -> declare the `E#` it encodes; structural well-formedness (uniqueness of a key, totality of a relation, no dangling reference) -> `//@req none:frame`; scope or universe setup -> `//@req none:harness`; behaviour of the PROSPECTIVE component -> convert it to a predicate/assertion, since a prospective requirement is never a fact; nothing you can name -> delete it.
-   - Never "weaken" one of these: a weakened fact that still encodes no requirement is an unowned constraint, and it will block again.
-   - A fact marked UNRESOLVED for N consecutive iterations already survived your previous instruction. Do not repeat that instruction - choose a different resolution, and if none is defensible, delete the fact.
-3. Review assumptions only when evidence points to a requirement-level issue.
-   Categorise each using the enum in `=== ASSUMPTIONS REVIEW ===`: `reduce` means too strong /
-   likely overconstraining; `leave temporary` means acceptable now but not stable enough to promote.
-4. Recommend requirement updates only when justified by verification - one of the causes listed
-   under `Issue Type:` in `=== REQUIREMENT UPDATES ===`, and nothing else. Fill every field of
-   that entry; the fields are the explanation, so do not repeat them as prose.
+3. WRITE THE REPAIR INSTRUCTIONS.
+   Specify the constraints, guards, relaxations, or scoped fixes needed to align the model with the
+   current requirements. If a regression occurred, state what behaviour must remain stable next.
+   - A prospective requirement (`R#`) encoded as a FACT is a model defect - name the fact and the
+     requirement it encodes. An UNSAT `baseline` is the signature symptom, because a fact applies
+     globally: one inconsistent unverified constraint in a fact makes the ENTIRE model UNSAT.
+   - Never repair a failing assertion by converting it into a fact, deleting it, or weakening its
+     property so the check passes. A failing check is evidence about the requirements: diagnose
+     which requirement(s) conflict with it instead.
 
-   ABSTRACTION GATE — how a requirement update must be WORDED. Apply the
-   WHAT/HOW test (see ABSTRACTION GUIDANCE below) first: a HOW never reaches
-   this section - route it to REPAIR INSTRUCTIONS or a lesson. For every
-   candidate that passes as a WHAT:
-   - It must read as if written for a domain stakeholder who has never seen Alloy. It MUST NOT contain: signature/field/predicate/function/assertion names, variable names, Alloy operators or keywords, or directives about which construct or variable to use.
-   - A candidate that is a genuine WHAT but leaks that vocabulary is not rejected - it is REWORDED in domain terms.
-   Examples:
-   - ✗ "use only one of delegatedAt or InitiatedIn; do not use both"  → modeling choice (HOW) → REPAIR INSTRUCTIONS/lesson, not a requirement.
-   - ✗ "use only one variable, either time or State"                  → modeling choice (HOW) → REPAIR INSTRUCTIONS/lesson.
-   - ✗ "for every EmergencyTrigger, endedAt must be set"              → real requirement but leaks names → REWORD: "every triggered emergency must have a definite end time".
-   - ✓ "an emergency, once triggered, must have a definite end time and cannot persist indefinitely".
+4. RESOLVE UNOWNED BLOCKING FACTS - only when the input carries this finding.
+   Each listed fact is PROVEN to block a scenario while declaring no requirement: do not re-argue
+   whether it blocks, and never weaken it. The UNOWNED BLOCKING FACTS section states how to
+   classify and resolve them; record one decision per listed fact under
+   `=== UNOWNED BLOCKING FACT DECISIONS ===`, before any other repair instruction.
 
-   DO NOT recommend requirement updates for pure modeling choices.
-   If a change is only provisional, recommend adding it to the Assumption Review section rather than the stable requirements document.
-5. Handle Q&A reuse and unresolved questions
-   Follow the Q&A section below. 
-6. Suggest stronger verification checks only when useful
-   - If hard metrics pass: suggest stronger assertions, negative cases, edge cases, or vacuity checks.
-   - Otherwise: suggest extra checks only if they help diagnose the current failure or distinguish model issues from requirement issues. 
-7. Prioritize handoff items for RE
-   Order by:
-   - critical blocker to fix now
-   - important follow-up improvement
-   - optional enhancement or future check
-8. Route the UNSAT analysis carried by the Verification Interpretation (when present)
-   Its "Systematic Unsatisfiability Analysis", "UNSAT Matrix" and "Diagnostic experiments
-   recommended" blocks are PRIMARY sources, not optional reading, and they outrank any generic
-   advice you might otherwise give. Ground your diagnosis in the minimal conflict sets and the
-   matrix entries marked `blocks_scenario` / `supports_scenario`, citing the entry's source and
-   reasoning. Every non-trivial `recommended_follow_up`, and every proposed diagnostic experiment,
-   MUST reappear in your output - in its own wording - routed by kind:
-     user clarification -> `=== UPDATED USER QUESTIONS ===`
-     model change or test -> `=== REPAIR INSTRUCTIONS ===`
-     experiment you adopt -> `=== DIAGNOSTIC PLAN ===`, and decide `run diagnostic experiments`
-     requirement conflict -> `=== REQUIREMENT UPDATES ===`
-   Never choose `keep fix` while an unrouted `recommended_follow_up` remains.
+5. REVIEW ASSUMPTIONS AND REQUIREMENT UPDATES.
+   - Review assumptions only when the evidence points to a requirement-level issue. Categorise each
+     with the enum in `=== ASSUMPTIONS REVIEW ===`: `reduce` means too strong / likely
+     overconstraining; `leave temporary` means acceptable now but not stable enough to promote.
+   - Recommend a requirement update only when verification justifies it - one of the causes listed
+     under `Issue Type:` in `=== REQUIREMENT UPDATES ===`, and nothing else. Fill every field of
+     that entry; the fields are the explanation, so do not repeat them as prose.
+   - ABSTRACTION GATE: apply the WHAT/HOW test in ABSTRACTION GUIDANCE below. A HOW is never a
+     requirement update - route it to REPAIR INSTRUCTIONS or a lesson. A WHAT that leaks Alloy
+     vocabulary is REWORDED, not rejected: "for every EmergencyTrigger, endedAt must be set"
+     becomes "every triggered emergency must have a definite end time".
+   - A change that is only provisional belongs in the assumption review, not in the stable
+     requirements document.
 
+6. RECONCILE Q&A. Follow the Q&A section below.
 
-### DECISION POLICY
-- Use the result interpretation and regression diagnosis, do not re-diagnose from scratch.
-- Base the next-action decision on BOTH the result interpretation's causal analysis and any deterministic diagnosis evidence provided. Do NOT choose **escalate to requirement clarification** when the interpretation attributes the failure to the model/encoding; a requirement-level conclusion requires supporting evidence from the interpretation and (when present) the deterministic diagnosis.
-- If the latest change caused unrelated failures, prefer **refine/narrow fix** or **partially revert**.
-- If the latest change exposed requirement ambiguity or contradiction, prefer **escalate to requirement clarification**.
-- Do not recommend "keep fix" while persistent unsat predicates or counterexamples remain unless you justify why they are acceptable under the current requirements.
-- Never repair a failing assertion by converting it into a fact, deleting it, or weakening its property so the check passes: a failing check is evidence about the requirements, and hiding it masks a requirement gap or inconsistency. If an assertion cannot hold, diagnose which requirement(s) conflict with it instead.
-- If the same failure persists for three or more iterations without meaningful change, reassess requirement inconsistency, ambiguity, missing constraints, or unjustified assumptions instead of continuing model-only repair advice. EXCEPTION: this heuristic is superseded whenever the input carries a computed STRATEGY line - persistence is exactly the condition that produces one, and the STRATEGY was decided from measured evidence this heuristic does not have. Follow the STRATEGY.
-- If the main issue may be caused by inadequate bounds, prefer **adjust scope/trace and rerun**.
-- Choose **run diagnostic experiments** only when you cannot tell WHICH construct causes the
-  failure and a run would tell you. It is not a hedge: a repair you can justify outranks an
-  experiment. An iteration is EITHER a repair OR a measurement - when you choose it, write
-  `=== REPAIR INSTRUCTIONS ===` as "None" and put the experiments in `=== DIAGNOSTIC PLAN ===`.
-  Emitting both is what makes the RE apply half of each.
-- A `fact`-level or `scope`-level hypothesis is dropped before it reaches the RE - the
-  deterministic diagnosis already disables facts one at a time, and the scope sweep already
-  ran. State hypotheses at `predicate` level, or the plan is discarded and this becomes an
-  ordinary repair iteration.
+7. SUGGEST STRONGER CHECKS, only when useful. If hard metrics pass: stronger assertions, negative
+   cases, edge cases, or vacuity checks. Otherwise, only checks that help diagnose the current
+   failure or separate a model issue from a requirement issue.
+
 
 **Verification Interpretation:**
 {{interpretation}}
 
 **Failed Fix History:**
 {{failed_fix_history}}
-
-**CRITICAL INSTRUCTIONS FOR FAILED FIX HISTORY:** it is evidence about what did NOT work, never
-guidance. Do not repeat or rephrase a listed approach, and do not inherit the root cause it
-assumed - a diagnosis that failed is not evidence; re-examine it against the current
-interpretation and model. A repeatedly failing approach is itself a signal: say so, and ask
-whether the fix has been treating a symptom, or whether the defect is in the requirements rather
-than the Alloy encoding.
-
 
 **Current Alloy Model:**
 {{alloy_model}}
@@ -648,14 +624,14 @@ than the Alloy encoding.
 **Relevant lessons:**
 {{lessons}}
 
-Relevant Q&A: 
+Relevant Q&A:
 {{relevant_qa}}
 
 [SECTION: PersistentIssueEscalation]
 
-### 🚨 PERSISTENT ISSUE ESCALATION
+### PERSISTENT ISSUE ESCALATION
 
-Deterministic cross-iteration tracking has established that the issue(s) below survived repeated repair attempts. The evidence block below carries a computed STRATEGY line, decided from TWO independent evidence sources: the result interpretation's causal analysis (InterpretResults) and the deterministic Alloy Analyzer diagnosis. The "EVIDENCE ALIGNMENT" block records how they were combined. Follow the binding rules for that STRATEGY exactly.
+Deterministic cross-iteration tracking has established that the issue(s) below survived repeated repair attempts. The evidence block below carries a computed STRATEGY line. It was decided from the result interpretation's causal analysis - which was itself written with the deterministic Alloy Analyzer diagnosis in front of it, measured before the interpretation ran. The "EVIDENCE ALIGNMENT" block records the determination. Follow the binding rules for that STRATEGY exactly.
 
 {{persistence_status}}
 
@@ -664,15 +640,16 @@ Deterministic cross-iteration tracking has established that the issue(s) below s
 - `MINIMAL BLOCKING FACT SET` with implicated requirements: the requirements diagnosis MUST be grounded in exactly that proven set - name those requirement IDs and explain the conflict among them. Do NOT substitute guessed constraints; if the proven set contradicts your hypothesis, the proven set wins.
 - `MINIMAL BLOCKING FACT SET: NONE` (UNSAT with all facts disabled): the contradiction is inside the predicate body or the signature declarations/multiplicities it uses. Classify as `model overconstraint` per the exception in requirements-diagnosis rule 2 below - unless the predicate body directly transcribes requirement text, in which case diagnose that requirement.
 
-**WHICH SOURCE DECIDES:** the result interpretation's causal analysis decides whether the cause is requirement-level. The deterministic diagnosis establishes WHERE the contradiction sits - which facts, which predicate body, which bounds - and that locates the repair; it does not overturn the cause, because a predicate body faithfully transcribing a self-contradictory requirement measures as a modeling contradiction. The EVIDENCE ALIGNMENT block above records the determination and fixes the STRATEGY - do NOT override it.
+The EVIDENCE ALIGNMENT block above records the determination and fixes the STRATEGY - do NOT override it.
 
-**SCOPE OF THE STRATEGY:** the binding rules below govern your next-action decision and the diagnosis you write for the escalated issues. They do NOT govern the `UNOWNED BLOCKING FACTS` finding, if the evidence above contains one: an undeclared fact is a bookkeeping defect, so its decisions are required under EVERY strategy and are neither a requirement diagnosis nor a competing repair hypothesis.
+**SCOPE OF THE STRATEGY:** the binding rules below govern your next-action decision and the diagnosis you write for the escalated issues. They do NOT govern:
+- the `UNOWNED BLOCKING FACTS` finding, if the evidence above contains one: an undeclared fact is a bookkeeping defect, so its decisions are required under EVERY strategy and are neither a requirement diagnosis nor a competing repair hypothesis.
+- `=== UPDATED USER QUESTIONS ===`. A question changes no requirement and commits to no cause - it collects the information the next iteration needs whichever way the repair goes. Every BLOCKING QUESTION from the Result Interpretation is therefore still reconciled against the retrieved Q&A and asked unless one of them already answers it, under EVERY strategy. A strategy that rules out the `escalate to requirement clarification` DECISION does not rule out the question: suppressing a BLOCKING QUESTION on that basis is a misreading of these rules.
 
 Read ONLY the block matching the STRATEGY line above; the other does not apply this iteration.
 
 **FORBIDDEN RESPONSES for the escalated issues, under BOTH strategies:**
 - Repeating or rephrasing any fix listed under "Fixes already attempted".
-- Converting a failing assertion into a fact, deleting it, or weakening it so the check passes.
 - Generic advice ("review the constraints", "refine the predicate") in place of the structure the strategy requires.
 
 **BINDING RULES when STRATEGY is REQUIREMENTS_DIAGNOSIS (override the normal decision policy for the escalated issues above):**
@@ -695,9 +672,7 @@ Read ONLY the block matching the STRATEGY line above; the other does not apply t
 **BINDING RULES when STRATEGY is MODEL_OVERCONSTRAINT_REPAIR (override the normal decision policy for the escalated issues above):**
 
 1. The combined evidence shows a modeling cause (see the EVIDENCE ALIGNMENT conclusion). Your next-action decision for these issues MUST be a model-repair action - `refine/narrow fix`, `partially revert`, or `adjust scope/trace and rerun` - NOT `escalate to requirement clarification`.
-2. REPAIR INSTRUCTIONS MUST target the measured evidence: the named minimal blocking facts, or - for an internal contradiction - the predicate body and the signature declarations/multiplicities it uses. The repair MUST be materially different from every fix listed under "Fixes already attempted".
-3. Do NOT add entries to `=== POTENTIAL REQUIREMENT ISSUES ===` or `=== REQUIREMENT UPDATES ===` for these issues. A requirement-level diagnosis for them is FORBIDDEN this iteration: the evidence does not support it from both sources.
-4. Additionally FORBIDDEN: diagnosing a requirement issue when either the result interpretation or the deterministic diagnosis indicates a modeling cause.
+2. REPAIR INSTRUCTIONS MUST target the measured evidence: the named minimal blocking facts.
 
 [SECTION: GenerateSyntaxRepairInstruction]
 
@@ -1002,39 +977,27 @@ Provide the refined, final feedback incorporating the user's review. Update the 
 [SECTION: QAContextReuseAndUpdate]
 ### Q&A REUSE AND UPDATE
 
-Before emitting ANY question, reconcile each candidate from `Verification
-Interpretation` against the retrieved `RELEVANT PRIOR CLARIFICATIONS`.
+Before emitting ANY question, reconcile each candidate from the `Verification Interpretation`
+against the retrieved `RELEVANT PRIOR CLARIFICATIONS`. Match by INTENT, not wording: a candidate is
+answered if a retrieved Q&A settles the same underlying decision, even when reworded, narrowed, or
+re-framed. Classify each candidate and route it:
 
-Match by INTENT, not wording: a candidate is resolved if a retrieved Q&A answers
-the same underlying decision — even when reworded, narrowed, or re-framed (e.g.
-"strict requirement vs. diagnostic property"). Rephrasing an answered question is
-NOT a new question.
+- RESOLVED - a Q&A settles it -> do NOT ask. Report it under `=== Q&A REUSE ===` naming that ID,
+  and apply its answer as a fixed assumption.
+- STALE - a Q&A settled it, but the requirement or model has since changed so the answer no longer
+  holds -> mark that Q&A `outdated` under `=== Q&A UPDATE ===`, then ask the revised question.
+- UNRESOLVED - no Q&A bears on it -> ask it under `=== UPDATED USER QUESTIONS ===`, naming the
+  specific open decision and why it blocks verification.
 
-Classify each candidate:
-- RESOLVED — a Q&A answers it → do NOT ask; add its ID to `reused_qa_ids` and
-  apply that answer as a fixed assumption.
-- STALE — a Q&A answered it but the requirement/model changed so it no longer
-  holds → mark that Q&A `outdated`, then ask the revised question.
-- UNRESOLVED — no Q&A bears on it → only these may be asked, and only if you name
-  the specific open decision and why it blocks verification.
+Two readings that silently lose a real question - avoid both:
+- A confirmed Q&A settles only the DECISION it actually answers, not every question touching the
+  same requirement. A candidate turning on a different decision is UNRESOLVED even when the
+  requirement it names is confirmed elsewhere - ask it.
+- Routing a candidate into REPAIR INSTRUCTIONS does not dispose of it. An encoding repair and an
+  open clarification are not alternatives: when a candidate is both, emit both.
 
-Hard rules:
-- If you reuse or keep a Q&A `confirmed`, you may NOT re-ask a question it covers.
-- A confirmed Q&A settles the REQUIREMENT. If verification still fails while its
-  governing requirement is confirmed, the cause is the MODEL — route it to repair
-  instructions, do not turn it into a user question.
-
-Q&A pairs are immutable: update only status; create a new pair only for an
-UNRESOLVED or STALE-revised question (`provisional` until user-confirmed); mark
-no-longer-applicable pairs `outdated`.
-
-Return only:
-- `reused_qa_ids`
-- `updated_status`: only changed IDs (`confirmed`/`provisional`/`outdated`)
-- `updated_questions`: only UNRESOLVED or STALE-revised questions
-
-Do not return unchanged Q&A, answered or reworded-answered questions, or invented
-questions.
+Q&A pairs are immutable - only their status changes. A new pair is created only for an UNRESOLVED
+or STALE-revised question, and stays `provisional` until the user confirms it.
 
 [SECTION: ResponseFormatInterpretation]
 ### RESPONSE FORMAT FOR INTERPRETATION:
@@ -1060,8 +1023,6 @@ Rationale: [1 sentence explanation]
 [For each issue classified as requirement issue or assumption requiring confirmation, include:]
 1. [specific question for the user]
   Why needed: [what ambiguity, missing condition, conflict, or assumption it resolves]
-2. [specific question for the user]
-  Why needed:
 OR
 - No question needed: [brief reason why]
 ```
@@ -1236,11 +1197,12 @@ then instance quality. Any UNSAT predicate, unresolved requirement conflict, det
 outstanding clarification forces FALSE.]
 
 === UNOWNED BLOCKING FACT DECISIONS ===
-[One entry for EACH fact listed under UNOWNED BLOCKING FACTS in the input - no omissions. Write "None" only if the input listed no such facts. Choose the resolution by the rules stated above; "weaken" is not one of them.]
+[One entry for EACH fact listed under UNOWNED BLOCKING FACTS in the input - no omissions. Write "None" only if the input listed no such facts. Choose the resolution by the rules in the UNOWNED BLOCKING FACTS section; "weaken" is not one of them.]
 - Fact: [exact construct name as listed]
-- Resolution: [declare E# | declare none:frame | declare none:harness | convert to predicate/assertion | delete]
-- Requirement: [the E# it encodes, or "none" for a frame/harness declaration, or the R# whose behaviour it constrains for a conversion]
+- Resolution: [existing-system requirement | structural well-formedness | scope/universe setup | prospective behaviour - does not belong in a fact | delete]
+- Requirement: [the E# it encodes; "none" when it legitimately owns no requirement; or the R# whose behaviour it constrains]
 - Rationale: [1 sentence: what the fact actually constrains, and why that resolution follows]
+
 
 === DIAGNOSTIC PLAN ===
 [Required when Decision is `run diagnostic experiments`; write "None" for every other decision.
@@ -1258,7 +1220,7 @@ is discarded before the RE sees it.]
 rationale, and examples when helpful]
 ["None" when Decision is `run diagnostic experiments` - that iteration produces evidence, not a repair]
 [**MANDATORY**: carry out every decision recorded above, and every model-side
-recommended_follow_up routed here by task 8, as a concrete edit the RE can apply]
+recommended_follow_up routed here by step 1, as a concrete edit the RE can apply]
 [Or "None" if no model changes needed]
 
 === POTENTIAL REQUIREMENT ISSUES ===
@@ -1298,21 +1260,27 @@ produce no entry here (UNSURE goes to UPDATED USER QUESTIONS instead).]
 [Or "None - no requirement updates justified"]
 
 
+=== Q&A REUSE ===
+[One line per BLOCKING QUESTION from the Verification Interpretation that you are NOT
+asking below, in the form `<Q&A ID>: <the question, one line> - <what that Q&A already
+answers>`. A candidate belongs here ONLY when a retrieved Q&A answers the same decision;
+name the ID that answers it. Every BLOCKING QUESTION not accounted for here MUST appear
+under UPDATED USER QUESTIONS.]
+[Or "None - no prior Q&A reused"]
+
 === UPDATED USER QUESTIONS ===
 [Number each question]
-[Ask a question for each assumption marked "need confirmation" above, and for every
-recommended_follow_up routed here by task 8]
+[Ask a question for each assumption marked "need confirmation" above, for every
+recommended_follow_up routed here by step 1, for every BLOCKING QUESTION from the Verification
+Interpretation not accounted for under Q&A REUSE above, and for every `[CLASSIFICATION]` question
+raised by triage bucket 5]
 [ONLY ask genuinely new unresolved blocking questions not in existing Q&A]
 [Or "None"]
 
-=== Q&A STATUS UPDATE ===
+=== Q&A UPDATE ===
 [Q&A ID]: [confirmed / provisional / outdated] - [brief reason]
 [Or "None - no status changes"]
 
-=== HANDOFF TO RE ===
-Priority 1 (Critical blockers): [items]
-Priority 2 (Important improvements): [items]
-Priority 3 (Optional enhancements): [items]
 ```
 
 [SECTION: QualityStandards] // not used in any action
@@ -1335,11 +1303,9 @@ Complete when ALL conditions are met:
 2. No counterexamples
 3. All positive run commands satisfied (excluding "negative" test cases)
 
-**AGENT ASSESSMENT (evaluated when hard metrics pass):**
-4. Satisfying instances are meaningful and comprehensive
-5. No vacuity or underspecification detected
-6. All requirements adequately verified
-7. User indicates satisfaction or provides no additional feedback
+**AGENT ASSESSMENT (only once the hard metrics pass):** satisfying instances are meaningful and
+comprehensive, no vacuity or underspecification, every requirement adequately verified, and the
+user raised nothing further.
 
 Convergence = Hard Metrics Pass AND Agent Assessment Recommends TRUE
 

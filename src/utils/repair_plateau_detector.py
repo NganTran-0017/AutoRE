@@ -1320,6 +1320,20 @@ def build_diagnostic_reissue(
     return result
 
 
+_PROBE_RE = _re.compile(r'^probe(\d+)_(\w*)', _re.IGNORECASE)
+
+
+def _probe_suffix(name: str) -> str:
+    """`probe2_ScenarioMultiEmgA` -> `ScenarioMultiEmgA`."""
+    m = _PROBE_RE.match(name or "")
+    return m.group(2) if m else ""
+
+
+def _construct_key(name: str) -> str:
+    """Compare names without separators or case - the RE drops underscores."""
+    return "".join(ch for ch in (name or "") if ch.isalnum()).lower()
+
+
 def read_back_probe_verdicts(
     plan_items: Optional[List[Dict[str, str]]],
     satisfied: Optional[List[str]] = None,
@@ -1341,22 +1355,64 @@ def read_back_probe_verdicts(
     how "both hypotheses exonerated - so the defect is requirement-level" gets
     concluded from one experiment that ran and one that never existed.
 
-    Probes are matched by position: item i owns `probe<i+1>_*`.
+    Probes are matched BY NAME first, by position only as a fallback. `probe<N>_`
+    numbering is the RE's, not ours: an RE that probes the item it found easiest
+    and calls it `probe1_` would, under positional matching alone, have every
+    verdict attributed to the wrong hypothesis - reported confidently, since a
+    full and plausible table is still produced. The suffix already carries the
+    construct, so it is the more reliable key. Each probe is claimed once, so a
+    plan item whose probe went to another item correctly reports `not_run`.
     """
     import re
 
     satisfied = list(satisfied or [])
     unsatisfied = list(unsatisfied or [])
-    results: List[Dict[str, Any]] = []
+    items = list(plan_items or [])
+    all_probes = [n for n in satisfied + unsatisfied if _PROBE_RE.match(n)]
 
-    for index, item in enumerate(plan_items or [], start=1):
+    claimed: Dict[int, str] = {}   # item index (1-based) -> probe name
+    taken: set = set()
+
+    def _claim(pred):
+        for index, item in enumerate(items, start=1):
+            if index in claimed:
+                continue
+            key = _construct_key(item.get("construct", ""))
+            if not key:
+                continue
+            for probe in all_probes:
+                if probe in taken:
+                    continue
+                if pred(key, _construct_key(_probe_suffix(probe))):
+                    claimed[index], _ = probe, taken.add(probe)
+                    break
+
+    # Exact on the normalized suffix (`Scenario_MultiEmg_A` -> `ScenarioMultiEmgA`),
+    # then containment, which is how a truncated or extended suffix still lands.
+    _claim(lambda key, suffix: bool(suffix) and key == suffix)
+    _claim(lambda key, suffix: bool(suffix) and (key in suffix or suffix in key))
+
+    # Fallback: an unclaimed item takes `probe<i>_` if that probe is still free.
+    misnumbered: List[str] = []
+    for index, item in enumerate(items, start=1):
+        if index in claimed:
+            m = _PROBE_RE.match(claimed[index])
+            if m and int(m.group(1)) != index:
+                misnumbered.append(f"{claimed[index]} answers plan item {index}")
+            continue
         prefix = re.compile(rf"^probe{index}_", re.IGNORECASE)
-        sat = [n for n in satisfied if prefix.match(n)]
-        unsat = [n for n in unsatisfied if prefix.match(n)]
-        if sat:
-            status, probe = "confirmed", sat[0]
-        elif unsat:
-            status, probe = "refuted", unsat[0]
+        free = [n for n in all_probes if n not in taken and prefix.match(n)]
+        if free:
+            claimed[index] = free[0]
+            taken.add(free[0])
+
+    results: List[Dict[str, Any]] = []
+    for index, item in enumerate(items, start=1):
+        probe = claimed.get(index)
+        if probe and probe in satisfied:
+            status = "confirmed"
+        elif probe and probe in unsatisfied:
+            status = "refuted"
         else:
             status, probe = "not_run", None
         results.append({
@@ -1373,10 +1429,16 @@ def read_back_probe_verdicts(
         "probes": [r["probe"] for r in results if r["probe"]],
         "not_run": [r["construct"] for r in results if r["status"] == "not_run"],
         "all_refuted": bool(results) and all(r["status"] == "refuted" for r in results),
+        "misnumbered": misnumbered,
+        "unmatched_probes": sorted(n for n in all_probes if n not in taken),
     }
 
 
-def build_probe_verdict_block(readback: Dict[str, Any]) -> str:
+def build_probe_verdict_block(
+    readback: Dict[str, Any],
+    control: Optional[str] = None,
+    probe_bodies: Optional[Dict[str, str]] = None,
+) -> str:
     """
     Render the readback as measured evidence for the escalation directive - data
     only, alongside `blocking_facts`. The interpretation rules live in the prompt.
@@ -1385,12 +1447,23 @@ def build_probe_verdict_block(readback: Dict[str, Any]) -> str:
     to misread as failure: every candidate encoding was exonerated, which points
     at the requirement rather than the model - but only when every item actually
     ran, which is why `not_run` items suppress it.
+
+    `control` is the CONTROL line from the diff check. It leads the block because
+    a verdict measured on an altered model means nothing, and that has to be read
+    before the verdicts, not after them.
+
+    `probe_bodies` carries each probe's source. The declared reading is the RE's
+    CLAIM about what the probe altered; the body is the only evidence of what it
+    actually altered. Since the probes are gone from the model the Evaluator is
+    handed, this block is where they survive.
     """
     results = (readback or {}).get("results") or []
     if not results:
         return ""
 
     lines = [PROBE_VERDICTS_HEADING]
+    if control:
+        lines.append(control)
     label = {
         "confirmed": "CONFIRMED (SAT)",
         "refuted": "REFUTED (UNSAT)",
@@ -1402,7 +1475,25 @@ def build_probe_verdict_block(readback: Dict[str, Any]) -> str:
         lines.append(f"  Declared reading: {r['reading']}")
         lines.append(f"  Probe: {r['probe'] or 'none'}")
         lines.append(f"  Verdict: {label[r['status']]}")
+        body = (probe_bodies or {}).get(r["probe"] or "")
+        if body:
+            lines.append("  Probe source (as executed):")
+            lines.extend(f"    {ln}" for ln in body.splitlines())
 
+    if readback.get("misnumbered"):
+        # Corrected, not hidden: the numbering was wrong, so the RE will likely
+        # get it wrong again, and a reader comparing this block to the model
+        # would otherwise see numbers that do not line up.
+        lines.append(
+            "NOTE: probe numbering did not follow the plan order; matched by construct name "
+            "instead (" + "; ".join(readback["misnumbered"]) + ")."
+        )
+    if readback.get("unmatched_probes"):
+        lines.append(
+            "NOTE: " + ", ".join(readback["unmatched_probes"]) + " ran but matches no plan "
+            "item. It measures something that was not ordered - do not read it as evidence "
+            "for any hypothesis below."
+        )
     if readback.get("not_run"):
         lines.append(
             "NOTE: " + ", ".join(readback["not_run"]) + " produced no verdict. An item that "
@@ -1414,6 +1505,152 @@ def build_probe_verdict_block(readback: Dict[str, Any]) -> str:
             "are exonerated as the cause; the remaining explanation is at the requirement level."
         )
     return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------- #
+# Mode 3: the control check.
+#
+# A diagnostic iteration is only additive - probes are added, nothing existing is
+# touched - and the whole meaning of a SAT/UNSAT verdict rests on that. Rolling
+# the model back afterwards protects the MODEL from an illegal edit; it does not
+# protect the EVIDENCE, because the analyzer already ran on the altered model and
+# the verdict is already recorded. So the control is checked, not assumed.
+# --------------------------------------------------------------------------- #
+
+CONTROL_UNMODIFIED = "Control: UNMODIFIED (identical to the pre-experiment model outside the probes)"
+
+
+def _normalize_model(text: str) -> List[str]:
+    """
+    Blank lines dropped and every whitespace run collapsed to one space.
+
+    Alloy treats whitespace only as a token separator, so re-indenting or padding
+    is not an edit. Being lenient here is deliberate: a false MODIFIED throws away
+    a sound measurement, which costs more than letting a cosmetic change pass.
+    """
+    return [" ".join(ln.split()) for ln in (text or "").splitlines() if ln.strip()]
+
+
+def strip_probes(model_text: str) -> str:
+    """
+    Remove every `probe<N>_` block and its own `run` command.
+
+    What is left must equal the pre-experiment model. Run commands are removed by
+    name rather than by position because a probe's run may sit anywhere among the
+    others.
+    """
+    import re
+
+    from .semantic_diagnostics import extract_all_blocks, is_probe_name
+
+    lines = (model_text or "").splitlines()
+    drop = set()
+    probes = set()
+    for b in extract_all_blocks(model_text or ""):
+        if is_probe_name(b["name"]):
+            probes.add(b["name"])
+            drop.update(range(b["start"], b["end"] + 1))
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith(("run ", "check ")) and any(
+            re.search(rf'\b{re.escape(p)}\b', stripped) for p in probes
+        ):
+            drop.add(i)
+    return "\n".join(ln for i, ln in enumerate(lines) if i not in drop)
+
+
+def extract_probe_bodies(model_text: str) -> Dict[str, str]:
+    """Probe name -> its source, so the verdict survives the model it was measured on."""
+    from .semantic_diagnostics import extract_all_blocks, is_probe_name
+
+    lines = (model_text or "").splitlines()
+    return {
+        b["name"]: "\n".join(lines[b["start"]: b["end"] + 1])
+        for b in extract_all_blocks(model_text or "")
+        if is_probe_name(b["name"])
+    }
+
+
+def diff_diagnostic_control(
+    diagnostic_model: str,
+    baseline_model: str,
+) -> Dict[str, Any]:
+    """
+    Did the diagnostic iteration change anything other than adding probes?
+
+    Returns {"modified", "changed", "removed", "added", "probes", "status", "detail"}.
+    `status` is the CONTROL line that leads the verdict block; `modified` True means
+    every verdict from that iteration is void - the hypothesis was tested against a
+    model nobody approved, so a SAT may be the edit talking, not the probe.
+
+    With no baseline to compare against, report UNMODIFIED rather than guessing:
+    the same refuse-when-unsure rule the guard rails use. A false MODIFIED discards
+    a sound measurement, which is the more expensive mistake.
+    """
+    from .semantic_diagnostics import extract_all_blocks, is_probe_name
+
+    probes = sorted(extract_probe_bodies(diagnostic_model).keys())
+    result: Dict[str, Any] = {
+        "modified": False,
+        "changed": [],
+        "removed": [],
+        "added": [],
+        "probes": probes,
+        "status": CONTROL_UNMODIFIED,
+        "detail": "",
+    }
+    if not (baseline_model or "").strip() or not (diagnostic_model or "").strip():
+        return result
+
+    stripped = strip_probes(diagnostic_model)
+    if _normalize_model(stripped) == _normalize_model(baseline_model):
+        return result
+
+    def _split(text):
+        """Named non-probe blocks (line-break-insensitive) and everything else."""
+        lines = text.splitlines()
+        blocks, owned = {}, set()
+        for b in extract_all_blocks(text):
+            if is_probe_name(b["name"]):
+                continue
+            span = range(b["start"], b["end"] + 1)
+            owned.update(span)
+            blocks[b["name"]] = " ".join(_normalize_model(
+                "\n".join(lines[b["start"]: b["end"] + 1])))
+        residual = _normalize_model(
+            "\n".join(ln for i, ln in enumerate(lines) if i not in owned))
+        return blocks, residual
+
+    before, residual_before = _split(baseline_model)
+    after, residual_after = _split(stripped)
+    result["changed"] = sorted(n for n in before if n in after and before[n] != after[n])
+    result["removed"] = sorted(n for n in before if n not in after)
+    result["added"] = sorted(n for n in after if n not in before)
+
+    parts = []
+    if result["changed"]:
+        parts.append(f"modified {', '.join(result['changed'])}")
+    if result["removed"]:
+        parts.append(f"deleted {', '.join(result['removed'])}")
+    if result["added"]:
+        parts.append(f"added non-probe {', '.join(result['added'])}")
+    if not parts:
+        if residual_before == residual_after:
+            # Every block and every stray line matches - the earlier inequality was
+            # line breaks alone. Not an edit.
+            return result
+        # A run command, a scope, an open statement. Named vaguely on purpose:
+        # it is outside any block, but it is still a changed control.
+        parts.append("changed text outside any named block (a run command, a scope, or an open)")
+
+    result["modified"] = True
+    result["detail"] = "; ".join(parts)
+    result["status"] = (
+        f"Control: MODIFIED - the RE {result['detail']}. Mode 3 permits additions only, so "
+        f"these verdicts were measured against a model that is not the one under repair. "
+        f"Treat every hypothesis below as UNANSWERED and do not act on its verdict."
+    )
+    return result
 
 
 _DIAGNOSTIC_PLAN_HEADER = "=== DIAGNOSTIC PLAN ==="
@@ -1642,7 +1879,16 @@ def build_stale_construct_removal(
             )
         for name in result["remove_targets"]:
             if name in orphans:
-                why = f"encodes {', '.join(orphans[name])}, which is no longer in the requirements"
+                owners = orphans[name]
+                if isinstance(owners, str):
+                    # A plain-language reason rather than a list of requirement
+                    # IDs (a spent diagnostic probe encodes no requirement at
+                    # all). Joining a string here spelled it out letter by
+                    # letter, so state it as given.
+                    why = owners
+                else:
+                    why = (f"encodes {', '.join(owners)}, which is no longer in "
+                           f"the requirements")
             elif name in cascaded:
                 why = "helper left with no caller once the constructs above are deleted"
             elif name in dead:
@@ -1667,6 +1913,52 @@ def build_stale_construct_removal(
         return result
     except Exception:
         return result
+
+
+def merge_stale_removals(
+    current_iteration: int,
+    existing: Optional[Dict[str, Any]],
+    incoming: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """
+    Union two REMOVE_STALE_CONSTRUCTS directives into one.
+
+    Several producers stage deletions into the same slot within one iteration -
+    spent diagnostic probes, the constructs of a requirement the user removed,
+    and the ownership audit's orphans. Assigning meant the last writer silently
+    discarded the others, and a construct dropped that way is never retried: each
+    producer only fires on the condition that first surfaced it.
+
+    Merging keeps one directive with one consumer. The text is rebuilt from the
+    merged inputs so it still states why each construct is going.
+    """
+    if not existing or not (existing.get("remove_targets") or []):
+        return incoming
+    if not incoming or not (incoming.get("remove_targets") or []):
+        return existing
+
+    def _audit(d):
+        return d.get("audit") or {}
+
+    audit = {
+        "orphan": {**(_audit(existing).get("orphan") or {}),
+                   **(_audit(incoming).get("orphan") or {})},
+        "dead": sorted(set(_audit(existing).get("dead") or [])
+                       | set(_audit(incoming).get("dead") or [])),
+        "kinds": {**(_audit(existing).get("kinds") or {}),
+                  **(_audit(incoming).get("kinds") or {})},
+    }
+    closure = {
+        "remove": sorted(set(existing.get("remove_targets") or [])
+                         | set(incoming.get("remove_targets") or [])),
+        "cascaded": sorted(set(existing.get("cascaded") or [])
+                           | set(incoming.get("cascaded") or [])),
+        "blocked": {**(existing.get("blocked") or {}),
+                    **(incoming.get("blocked") or {})},
+    }
+    return build_stale_construct_removal(
+        current_iteration=current_iteration, audit=audit, closure=closure
+    )
 
 
 def build_encode_provisional(

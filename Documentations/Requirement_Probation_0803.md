@@ -48,6 +48,89 @@ Persisted like the three audit logs (load on init, trim on resume, snapshot to
 **logged**, because a status that vanished and one that was confirmed both leave
 an item unmarked.
 
+## Three stores, three jobs
+
+Probation spans three files. All three concern requirement changes, which makes
+them easy to confuse — but each answers a different question and leaves a
+different artifact under `Output/`.
+
+| Store | Question it answers | Live file | Snapshot |
+|---|---|---|---|
+| `RequirementPatchLog` | what did we edit, and what did it say before? | `memory/<project>/requirement_patch_log.json` | `Output/RequirementPatchLog/patchlog_MMDD_HHAM.log` |
+| `RequirementStatusStore` | which requirements do we trust yet? | `memory/<project>/requirement_status.json` | `Output/RequirementStatus/reqstatus_MMDD_HHAM.log` |
+| conflict shadow log | how often does bucket 6 cry wolf? | — | `Output/RequirementConflict/shadow.jsonl` |
+
+The `Output/` copies exist because a fresh start wipes `memory/`. They are
+timestamped per run, the workflow never reads them back, and after a wipe they
+are the only surviving record.
+
+### The patch log is a diary
+
+One entry per `UpdateRequirements` call, keyed by iteration, append-only: the
+LLM's raw patch text, the ops parsed from it, which applied / were blocked /
+errored, and for each applied op its `before` and `after` text.
+
+> **it.23** — `MODIFY R7`. before: *"keep an audit trail"* · after: *"keep an
+> audit trail of every delegation"* · applied.
+
+It writes only when an edit happens, and never revises an entry.
+
+### The status store is a scoreboard
+
+One row per requirement, rewritten as evidence arrives:
+
+| after | R7's row |
+|---|---|
+| it.23 | `provisional`, 0/3 |
+| it.24 | `provisional`, 1/3 |
+| it.25 | `provisional`, 2/3 |
+| it.26 | `active` |
+
+### Why they are not one file
+
+Iterations 24–26 edited nothing. The score moved because the analyzer ran and
+R7's construct came back unimplicated. A diary of edits has nothing to write on
+those iterations, so it can never express "2 of 3 clean" — that fact comes from
+the solver, not from a patch. `register_implicated` and `register_stall` are the
+same story: both fire on evidence, and `register_stall` fires precisely because
+the RE did *not* act.
+
+The two are layered rather than duplicated. `prior_text` is copied from the patch
+log's `before`, which is what makes a failed probation revertible without
+re-deriving anything.
+
+### A confirmed row is not dead weight
+
+The store holds only requirements an update touched. `status_of` answers `active`
+for any ID with no row, so original-source requirements never appear at all, and
+`format_marker` renders nothing for `active` — in every prompt a confirmed item
+looks identical to an untouched one.
+
+Deleting the row on `confirm` would still be wrong. Three things outlive
+probation:
+
+- **`conflict_acknowledged`** — the detector re-reads the document every
+  iteration with no memory of its own verdicts. This flag is the only thing
+  stopping a conflict the user already settled from being raised again forever.
+- **`superseded_by`** — `displaced_by()` restores an item when the requirement
+  that displaced it is later reverted. That lookup runs long after both are off
+  probation.
+- **`active` written by `restore()`** — a rejected removal or a settled contest
+  lands here with the streak reset. The row records a user decision, not
+  leftover bookkeeping.
+
+### Reading the artifacts
+
+- **`Output/RequirementPatchLog/`** — one file per run. Diff two runs to see
+  which requirements drifted; `changes_since(n)` is the queryable form.
+- **`Output/RequirementStatus/`** — one file per run, a JSON array of rows. Read
+  `status`, `clean_streak`, `reason`. Only runs that patched a requirement
+  produce one.
+- **`Output/RequirementConflict/shadow.jsonl`** — one line per verdict, tagged
+  `contradicts` or `downgraded`. Nothing in the codebase reads it and no analysis
+  script exists yet (convention dedup has `scripts/analyze_convention_shadow.py`).
+  Read it by hand before trusting bucket 6.
+
 ## Lifecycle
 
 ```
@@ -126,9 +209,11 @@ requirement is unmodelable as stated.
 Triage gained CONTRADICTS: name the **minimal** set of existing IDs that cannot
 hold at the same time, in a `Conflicts with:` field on the updates entry.
 
-**It ships in observe mode** (`config.yaml: requirements.conflict_mode`). The
-verdict is written to `Output/RequirementConflict/shadow.jsonl` and nothing else
-happens. Whether it over-fires is a question about model behaviour that no unit
+**Two modes, set by `config.yaml: requirements.conflict_mode`.** The code default
+is `observe`; **this project's `config.yaml` currently sets `active`.** Both modes
+write the verdict to `Output/RequirementConflict/shadow.jsonl`, and neither acts
+on it — the difference is only who gets told. Whether it over-fires is a question
+about model behaviour that no unit
 test answers, and a false positive discards a requirement — possibly the user's
 own words — with no downstream way to recover it. Same playbook as convention
 dedup, and earned: the analogous CONTRADICTORY verdict for lessons is still
@@ -142,13 +227,23 @@ Two guards that do not depend on trusting the verdict:
 - on any uncertainty, **admit and let probation watch**. A missed contradiction
   resurfaces with solver evidence; a false block has no recovery path.
 
-In active mode a `[CONFLICT]` question asks which item governs and the updates
-section is withheld for that iteration. Withholding is deliberately coarse — the
-whole section, not just the conflicting entry — because a partial strip leaves it
-half-applied, and the triage re-runs every iteration, so a non-conflicting update
-it takes along costs one iteration, not the update. On override,
-`conflict_acknowledged` records the user's standing decision; **without that flag
-the same conflict is re-raised every iteration and the gate becomes unusable.**
+In active mode the claim reaches the user **as information, not as a question**,
+and `_attach_declared_conflicts` staples the claimed IDs onto the update once the
+patch has given it an ID. The updates section is **not** withheld in either mode:
+a CONTRADICTS verdict is one agent's reading of two English sentences, so
+blocking on it would discard a requirement — possibly the user's own words —
+before anything had checked whether the conflict was real. Verification settles
+it an iteration later.
+
+The question comes then, as a contest. If the user resolves it with `keep`, two
+independent things agree — the Evaluator's claim and a solver failure consistent
+with it — so `_settle_conflict_by_verification` stages the loser for deferred
+removal and calls `acknowledge_conflict`. That writes `conflict_acknowledged`,
+which is what stops the claim being re-reported; **without it the same conflict
+returns every iteration and the feature becomes unusable.** Waiting for the
+contest also makes the link exact: the conflict is settled against a named,
+already-applied requirement, with none of the guessing about which update
+displaced which item that made this unsafe to do at claim time.
 
 ## Convergence
 
@@ -169,9 +264,12 @@ iterations past the last change.
 2. **Attribution is still contested** when several changes are in flight. The
    unique-culprit rule prevents a wrong accusation but cannot produce a right one
    — those iterations simply yield no verdict.
-3. **`acknowledged_conflicts` is in-memory only.** A restart re-raises a conflict
-   the user already decided. The durable half (`conflict_acknowledged` on the
-   record) is written, but only once the update is applied.
+3. ~~**`acknowledged_conflicts` is in-memory only.**~~ **Closed.**
+   `_acknowledged_conflicts` unions the in-memory set with
+   `statuses.acknowledged_conflict_keys()` on every screening, so a restart no
+   longer re-raises a settled conflict. A resume to before the acknowledgement
+   still forgets it, deliberately — same rule as probation raised after the
+   resume point.
 4. **Question load.** `[CLASSIFICATION]`, `[CONFLICT]`, the requirement gate and
    the Q&A round all compete for the same user attention in one iteration.
    Nothing caps them yet; priority should be contested/stalled > conflict >

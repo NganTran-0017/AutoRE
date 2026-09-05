@@ -238,15 +238,18 @@ def test_the_entry_renders_its_own_verdicts():
     print("PASS test_the_entry_renders_its_own_verdicts")
 
 
-# ------------------------------------------------------ Phase 5: retirement #
+# -------------------------------------------- Phase 5: rollback + control #
 
-MODEL_WITH_PROBES = """pred Scenario_MultiEmg_A { some State }
-pred probe1_ScenarioMultiEmgA { some State } //@req none:probe
+BASELINE = """pred Scenario_MultiEmg_A { some State }
+fact EmergencyUnique { one s: State | s.emg }
+"""
+
+MODEL_WITH_PROBES = BASELINE + """pred probe1_ScenarioMultiEmgA { some State } //@req none:probe
 run probe1_ScenarioMultiEmgA for 6
 """
 
 
-def _make_workflow(model):
+def _make_workflow(model, baseline=BASELINE):
     from src.workflow import AutoREWorkflow
 
     wf = AutoREWorkflow.__new__(AutoREWorkflow)
@@ -254,31 +257,74 @@ def _make_workflow(model):
     wf.context = Mock()
     wf.context.iteration.current = 68
     wf.context.artifacts.get_latest_alloy_model.return_value = model
-    wf.context.pending_stale_removal = None
+    wf.context.artifacts.alloy_models = {67: baseline} if baseline else {}
+    wf.context.file_manager = Mock()
     return wf
 
 
-def test_spent_probes_are_staged_for_deletion():
+def test_the_model_rolls_back_and_the_probes_are_kept_as_evidence():
+    """
+    The probes are spent once read. Rather than asking the RE to prune them, the
+    lineage reverts - so an illegal edit cannot survive and no pruning has to
+    succeed. Their source is kept because the declared reading is only a claim
+    about what a probe altered.
+    """
     wf = _make_workflow(MODEL_WITH_PROBES)
-    wf._retire_diagnostic_probes(_entry(67, kind="diagnostic", plan=PLAN))
+    entry = _entry(68, kind="diagnostic", plan=PLAN)
 
-    staged = wf.context.pending_stale_removal
-    assert staged is not None
-    assert staged["remove_targets"] == ["probe1_ScenarioMultiEmgA"]
-    assert "probe1_ScenarioMultiEmgA" in staged["directive"]
-    print("PASS test_spent_probes_are_staged_for_deletion")
+    wf._finalize_diagnostic_model(entry)
+
+    wf.context.artifacts.store_alloy_model.assert_called_once_with(68, BASELINE)
+    wf.context.file_manager.save_alloy_model.assert_called_once_with(BASELINE, 68)
+    wf.context.file_manager.archive_diagnostic_model.assert_called_once()
+    assert "probe1_ScenarioMultiEmgA" in entry.diagnostic_probe_bodies
+    assert "Control: UNMODIFIED" in entry.diagnostic_control
+    print("PASS test_the_model_rolls_back_and_the_probes_are_kept_as_evidence")
 
 
-def test_retirement_leaves_ordinary_iterations_alone():
+def test_an_edited_control_voids_the_verdicts():
+    """
+    Rollback protects the MODEL; it cannot protect the EVIDENCE, because the
+    analyzer already ran on the edited model and the verdict is already recorded.
+    """
+    edited = MODEL_WITH_PROBES.replace("one s: State | s.emg", "some s: State | s.emg")
+    wf = _make_workflow(edited)
+    entry = _entry(68, kind="diagnostic", plan=PLAN)
+
+    wf._finalize_diagnostic_model(entry)
+
+    assert "Control: MODIFIED" in entry.diagnostic_control
+    assert "EmergencyUnique" in entry.diagnostic_control
+    assert "UNANSWERED" in entry.diagnostic_control
+    # still rolled back - the edit does not survive either
+    wf.context.artifacts.store_alloy_model.assert_called_once_with(68, BASELINE)
+    print("PASS test_an_edited_control_voids_the_verdicts")
+
+
+def test_rollback_leaves_ordinary_iterations_alone():
     wf = _make_workflow(MODEL_WITH_PROBES)
-    wf._retire_diagnostic_probes(_entry(67))  # kind="repair"
-    assert wf.context.pending_stale_removal is None
+    wf._finalize_diagnostic_model(_entry(68))  # kind="repair"
+    wf.context.artifacts.store_alloy_model.assert_not_called()
 
-    # And a diagnostic iteration whose probes are already gone stages nothing
-    wf2 = _make_workflow("pred Scenario_MultiEmg_A { some State }\n")
-    wf2._retire_diagnostic_probes(_entry(67, kind="diagnostic", plan=PLAN))
-    assert wf2.context.pending_stale_removal is None
-    print("PASS test_retirement_leaves_ordinary_iterations_alone")
+    # With no baseline to revert to, the diagnostic model stays as the head
+    # rather than the lineage being blanked.
+    wf2 = _make_workflow(MODEL_WITH_PROBES, baseline=None)
+    wf2._finalize_diagnostic_model(_entry(68, kind="diagnostic", plan=PLAN))
+    wf2.context.artifacts.store_alloy_model.assert_not_called()
+    print("PASS test_rollback_leaves_ordinary_iterations_alone")
+
+
+def test_the_verdict_block_carries_the_control_and_the_probe_source():
+    entry = _entry(68, kind="diagnostic", plan=PLAN, result=_result(sat=["probe1_A"]))
+    entry.diagnostic_control = "Control: UNMODIFIED (identical outside the probes)"
+    entry.diagnostic_probe_bodies = {"probe1_A": "pred probe1_A { some State }"}
+
+    block = format_probe_verdicts(entry)
+
+    assert "Control: UNMODIFIED" in block
+    assert "Probe source (as executed):" in block
+    assert "pred probe1_A { some State }" in block
+    print("PASS test_the_verdict_block_carries_the_control_and_the_probe_source")
 
 
 # ------------------------------------------------------------ persistence #
@@ -313,7 +359,9 @@ if __name__ == "__main__":
     test_the_block_carries_hypothesis_and_declared_reading()
     test_an_empty_plan_renders_nothing()
     test_the_entry_renders_its_own_verdicts()
-    test_spent_probes_are_staged_for_deletion()
-    test_retirement_leaves_ordinary_iterations_alone()
+    test_the_model_rolls_back_and_the_probes_are_kept_as_evidence()
+    test_an_edited_control_voids_the_verdicts()
+    test_rollback_leaves_ordinary_iterations_alone()
+    test_the_verdict_block_carries_the_control_and_the_probe_source()
     test_the_new_fields_round_trip()
     print("\nAll Phase 4/5 diagnostic readback tests passed.")

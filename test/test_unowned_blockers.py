@@ -134,12 +134,34 @@ def test_join_is_empty_without_either_input():
 
 # ------------------------------------------------------------- rendering #
 
+def _section(name):
+    from src.utils.prompt_manager import PromptManager
+    return PromptManager().get_section("Evaluator", name)
+
+
+def _fresh_finding(blockers, streaks=None):
+    """What the FEEDBACK step sees: the measured data plus the rules that the
+    Evaluator prompt now owns. The rules used to be built in Python; they moved
+    to `[SECTION: UnownedBlockingFacts]` so they can be edited in the prompt."""
+    return (format_unowned_blockers(blockers, streaks)
+            + "\n\n" + _section("UnownedBlockingFacts"))
+
+
+def _interpretation_prompt_section():
+    """How the interpretation is told to read the finding - it is part of the
+    InterpretResults procedure now, not a separate appended section."""
+    return _section("InterpretResults")
+
+
 def test_finding_states_the_four_valid_resolutions():
-    text = format_unowned_blockers(find_unowned_blockers(_audit(), DIAGNOSTICS))
+    text = _fresh_finding(find_unowned_blockers(_audit(), DIAGNOSTICS))
     assert "EmergencyUnique blocks Scenario_SecondEmergency" in text
-    for resolution in ("E#", "none:frame", "convert it to a predicate/assertion", "delete it"):
+    # Classifications, NOT the RE's annotation syntax - how a construct is
+    # declared or moved is the RE's decision, not the Evaluator's.
+    for resolution in ("existing-system requirement", "structural well-formedness",
+                       "scope/universe setup", "does not belong in a fact", "delete"):
         assert resolution in text
-    assert "Do not weaken it in place" in text
+    assert "never weaken it" in text
 
 
 def test_finding_leads_the_ownership_block():
@@ -161,6 +183,7 @@ def test_workflow_appends_the_finding_to_the_escalation_directive():
     wf.context = Mock()
     wf.context.ownership_audit = _audit()
     wf.logger = Mock()
+    wf.context.prompt_manager.get_section.return_value = "<rules>"
     escalation = {"directive": "existing directive text"}
 
     wf._flag_unowned_blockers(escalation, DIAGNOSTICS, MODEL)
@@ -176,6 +199,7 @@ def test_workflow_recomputes_the_audit_when_absent():
     wf.context.ownership_audit = None          # true after a resume
     wf.context.artifacts.get_latest_requirements.return_value = "E1: clearance"
     wf.logger = Mock()
+    wf.context.prompt_manager.get_section.return_value = "<rules>"
     escalation = {"directive": ""}
 
     wf._flag_unowned_blockers(escalation, DIAGNOSTICS, MODEL)
@@ -187,6 +211,7 @@ def test_flagging_failure_never_breaks_diagnostics():
     wf.context = Mock()
     wf.context.ownership_audit = "not-an-audit"
     wf.logger = Mock()
+    wf.context.prompt_manager.get_section.return_value = "<rules>"
     escalation = {"directive": "untouched"}
 
     wf._flag_unowned_blockers(escalation, DIAGNOSTICS, MODEL)   # must not raise
@@ -237,7 +262,7 @@ def test_first_sighting_gets_no_escalation_language():
 
 
 def test_persistent_blocker_is_told_not_to_repeat_the_failed_instruction():
-    text = format_unowned_blockers({"EmergencyUnique": ["P1"]}, {"EmergencyUnique": 2})
+    text = _fresh_finding({"EmergencyUnique": ["P1"]}, {"EmergencyUnique": 2})
     assert "UNRESOLVED for 2 consecutive iterations" in text
     assert "ESCALATION: EmergencyUnique" in text
     assert "do not repeat it" in text.lower()
@@ -246,14 +271,14 @@ def test_persistent_blocker_is_told_not_to_repeat_the_failed_instruction():
 
 def test_finding_supplies_criteria_for_choosing_among_the_four_resolutions():
     # Four options with no way to choose between them is not guidance.
-    text = format_unowned_blockers({"EmergencyUnique": ["P1"]})
+    text = _fresh_finding({"EmergencyUnique": ["P1"]})
     for cue in ("EXISTING system already guarantees", "well-formedness",
                 "scope or universe setup", "PROSPECTIVE component"):
         assert cue in text
 
 
 def test_finding_names_the_section_the_decision_must_be_recorded_in():
-    text = format_unowned_blockers({"EmergencyUnique": ["P1"]})
+    text = _fresh_finding({"EmergencyUnique": ["P1"]})
     assert BLOCKER_DECISION_HEADING in text
 
 
@@ -342,6 +367,7 @@ def test_workflow_records_the_streak_on_the_escalation():
     wf.context.iteration.current = 4
     wf.context.regression_log.entries = [_entry(3, {"EmergencyUnique": ["P"]})]
     wf.logger = Mock()
+    wf.context.prompt_manager.get_section.return_value = "<rules>"
     escalation = {"directive": ""}
 
     wf._flag_unowned_blockers(escalation, DIAGNOSTICS, MODEL)
@@ -360,6 +386,7 @@ def test_workflow_does_not_touch_the_escalation_level():
     wf.context.iteration.current = 1
     wf.context.regression_log.entries = []
     wf.logger = Mock()
+    wf.context.prompt_manager.get_section.return_value = "<rules>"
     escalation = {"directive": "", "escalation_level": 3}
 
     wf._flag_unowned_blockers(escalation, DIAGNOSTICS, MODEL)
@@ -370,6 +397,8 @@ def test_undecided_blockers_are_reported_after_feedback():
     wf = AutoREWorkflow.__new__(AutoREWorkflow)
     wf.context = Mock()
     wf.context.unowned_blockers = {"EmergencyUnique": ["P1"], "AtLeastTwoAdmins": ["P1"]}
+    wf.context.unowned_blockers_iteration = 7
+    wf.context.iteration.current = 7
     wf.logger = Mock()
 
     wf._check_blocker_decisions(FEEDBACK)
@@ -396,13 +425,16 @@ def _evaluator_prompt():
     return Path("prompts/Evaluator_prompt.txt").read_text()
 
 
-def test_evaluator_prompt_defines_the_annotation_vocabulary_it_tells_the_agent_to_use():
-    # The finding instructs the Evaluator to recommend `//@req none:frame`; the
-    # prompt previously never defined that syntax anywhere (it lived only in the
-    # RE prompt), so the agent was told to use vocabulary it had not been given.
-    prompt = _evaluator_prompt()
+def test_evaluator_does_not_prescribe_the_res_annotation_syntax():
+    # Encoding a requirement is the RE's job. The Evaluator classifies what a
+    # fact IS; it must not hand the RE `//@req` tokens to write, and it must not
+    # be taught that syntax as a standing instruction.
+    rules = _section("UnownedBlockingFacts")
     for token in ("//@req", "none:frame", "none:harness", "none:probe"):
-        assert token in prompt, f"{token} missing from Evaluator prompt"
+        assert token not in rules, f"{token} leaked into the Evaluator's decision rules"
+    fmt = _evaluator_prompt().split("[SECTION: ResponseFormatFeedback]", 1)[1]
+    resolution = [l for l in fmt.splitlines() if l.startswith("- Resolution:")][0]
+    assert "//@req" not in resolution and "none:frame" not in resolution
 
 
 def test_response_format_requires_a_decision_per_flagged_fact():
@@ -422,59 +454,75 @@ def test_decisions_are_requested_before_repair_instructions():
 BLOCKERS = {"EmergencyUnique": ["Scenario_MultiEmg_4_trace"]}
 
 
-def test_the_interpretation_copy_is_labelled_as_stale():
-    """Localization runs AFTER InterpretResults, so the list that prompt sees
-    was measured last iteration against a model step 8 has since rewritten."""
-    text = format_unowned_blockers(BLOCKERS, stale=True)
-    assert "PRIOR" in text
-    assert "PREVIOUS iteration" in text
-    assert "BEFORE the last update" in text
+def test_the_interpretation_is_told_how_to_read_the_finding():
+    """The read-rules live in the InterpretResults procedure (step 1), so no
+    separate 'prior' section is appended - and nothing labels the list stale."""
+    section = _interpretation_prompt_section()
+    assert "UNOWNED BLOCKING FACTS" in section
+    assert "PROVEN to block" in section
+    assert "structural well-formedness" in section
+    assert "scope setup" in section
 
 
-def test_the_stale_copy_asks_for_confirmation_against_the_current_model():
-    text = format_unowned_blockers(BLOCKERS, stale=True)
-    assert "still exists" in text
-    assert "CURRENT model" in text
+def test_no_stale_variant_survives():
+    """Localization runs BEFORE InterpretResults, so a list rendered for it was
+    measured against the model it is shown with. There is nothing to label."""
+    import inspect
+    from src.utils import traceability_store
+    assert "stale" not in inspect.signature(
+        traceability_store.format_unowned_blockers).parameters
+    prompt = _evaluator_prompt()
+    assert "UnownedBlockingFactsPrior" not in prompt
+    assert "PRIOR" not in format_unowned_blockers(BLOCKERS)
 
 
-def test_the_stale_copy_requests_no_decisions():
-    """ResponseFormatInterpretation has no section to record them in - asking
-    there is an instruction the response format cannot satisfy."""
-    text = format_unowned_blockers(BLOCKERS, stale=True)
-    assert BLOCKER_DECISION_HEADING not in text
-    assert "Resolve every one before proposing any other repair" not in text
-    assert "Do not propose resolutions here" in text
-
-
-def test_the_stale_copy_keeps_the_remove_dont_weaken_rule():
-    text = format_unowned_blockers(BLOCKERS, stale=True)
-    assert "never an over-restrictive constraint to weaken" in text
+def test_the_finding_still_forbids_weakening():
+    text = _fresh_finding(BLOCKERS)
+    assert "never weaken it" in text
 
 
 def test_the_fresh_copy_is_unchanged():
-    text = format_unowned_blockers(BLOCKERS)
-    assert "PRIOR" not in text
+    text = _fresh_finding(BLOCKERS)
     assert BLOCKER_DECISION_HEADING in text
-    assert "Resolve every one before proposing any other repair" in text
+    assert "before any other repair instruction" in text
 
 
 def test_both_copies_still_name_the_fact_and_what_it_blocks():
-    for stale in (True, False):
-        text = format_unowned_blockers(BLOCKERS, stale=stale)
-        assert "EmergencyUnique" in text
-        assert "Scenario_MultiEmg_4_trace" in text
+    text = format_unowned_blockers(BLOCKERS)
+    assert "EmergencyUnique" in text
+    assert "Scenario_MultiEmg_4_trace" in text
 
 
 def test_the_streak_marker_survives_in_the_stale_copy():
-    text = format_unowned_blockers(BLOCKERS, {"EmergencyUnique": 3}, stale=True)
+    text = format_unowned_blockers(BLOCKERS, {"EmergencyUnique": 3})
     assert "UNRESOLVED for 3 consecutive iterations" in text
 
 
-def test_the_ownership_block_uses_the_stale_wording():
-    """format_ownership_for_prompt feeds the interpretation prompts only."""
+def test_the_ownership_block_presents_the_finding_as_current_evidence():
+    """format_ownership_for_prompt feeds the interpretation prompts. The caller
+    only passes blockers measured THIS iteration, so nothing is labelled stale -
+    and the interpretation is still given no section to record decisions in."""
     block = format_ownership_for_prompt(None, blockers=BLOCKERS)
-    assert "PRIOR" in block
+    assert "PRIOR" not in block
+    assert "EmergencyUnique" in block
     assert BLOCKER_DECISION_HEADING not in block
+
+
+def test_a_stale_list_is_withheld_from_the_decision_check():
+    """Localization only runs on escalated iterations, so the context can hold a
+    list measured several model rewrites ago. The feedback was never shown it, so
+    it cannot be faulted for not deciding it."""
+    wf = AutoREWorkflow.__new__(AutoREWorkflow)
+    wf.context = Mock()
+    wf.context.unowned_blockers = {"EmergencyUnique": ["P1"], "AtLeastTwoAdmins": ["P1"]}
+    wf.context.unowned_blockers_iteration = 4      # measured 3 iterations ago
+    wf.context.iteration.current = 7
+    wf.logger = Mock()
+
+    wf._check_blocker_decisions(FEEDBACK)
+
+    logged = " ".join(str(c) for c in wf.logger.log.call_args_list)
+    assert "no decision recorded" not in logged
 
 
 if __name__ == "__main__":

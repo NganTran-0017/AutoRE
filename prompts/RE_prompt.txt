@@ -328,7 +328,11 @@ reading declared BEFORE the run. Do not invent experiments, and do not act on th
    add it to `All_Requirements`, never reference it in an assertion or an R-chain.
 
 Alloy cannot parameterise over predicates, so a probe duplicates the scenario body. That is
-accepted: probes live exactly one iteration and are deleted next iteration.
+accepted: probes live exactly one iteration. Once their verdicts are read the model is rolled
+back to the pre-experiment version, so your probes will NOT be in the model you are given next
+iteration - that is by design. Do not look for them, do not re-add them, and do not treat their
+absence as a deletion you need to undo. Everything you write outside a probe is discarded with
+them, which is the other reason not to repair anything here.
 
 **Forbidden - these turn a measurement into an undeclared repair:**
 - **DO NOT modify ANY existing construct.** Not the ones named in the plan, not their

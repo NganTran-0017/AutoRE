@@ -1,172 +1,166 @@
-# Sorts Output/{AlloyModels,AnalyzerOutput,Feedback,ReqsDoc,outputlog,RegressionLog}
-# into archivedOutput/MMDD[_HHAM/PM]/{AlloyModels,AnalyzerOutput,Feedback,ReqsDoc,Logs}.
-# Skips AnalyzerOutput/0-9 and /draft (current in-progress session) plus loose
-# undated files (metagpt.log, regression_log.json) -- leaves those in place.
-# Usage: DRY_RUN=1 python3 scripts/reorganize_output.py   # preview
-#        DRY_RUN=0 python3 scripts/reorganize_output.py   # execute
+# Snapshots Output/ into ONE dated archive folder, archivedOutput/<SESSION>/:
+#
+#   archivedOutput/0720/AlloyModels/      <- everything in Output/AlloyModels/
+#   archivedOutput/0720/AnalyzerOutput/   <- everything in Output/AnalyzerOutput/
+#   archivedOutput/0720/Feedback/         <- everything in Output/Feedback/
+#   archivedOutput/0720/ReqsDoc/          <- everything in Output/ReqsDoc/
+#   archivedOutput/0720/Logs/             <- every file in Output/outputlog/
+#                                            AND Output/RegressionLog/,
+#                                            except the always-empty metagpt.log
+#
+# The session folder is named by the caller, not derived per file. (The previous
+# version parsed a date out of each filename and scattered one run across a
+# folder per calendar day; it also only walked date-named SUBDIRECTORIES, which
+# the current flat layout no longer has, so it archived nothing but logs.)
+#
+# Copies by default, so Output/ stays intact and a --resume run can continue
+# from it. MODE=move empties the source instead.
+#
+# Usage: SESSION=0720 python3 scripts/reorganize_output.py              # preview
+#        SESSION=0720 DRY_RUN=0 python3 scripts/reorganize_output.py    # execute
+#        SESSION=0720 DRY_RUN=0 MODE=move ...      # relocate instead of copy
+#        SESSION=0720 FORCE=1 ...                  # overwrite what is already archived
+#        SESSION=0720 VERBOSE=1 ...                # list every entry, not just counts
 import os
-import re
 import shutil
-from collections import defaultdict
+import sys
 
 ROOT = "/home/nati/autoRE/Output"
 ARCHIVE = "/home/nati/autoRE/archivedOutput"
+
+SESSION = os.environ.get("SESSION") or (sys.argv[1] if len(sys.argv) > 1 else "")
 DRY_RUN = os.environ.get("DRY_RUN", "1") == "1"
+MODE = os.environ.get("MODE", "copy").lower()
+FORCE = os.environ.get("FORCE", "0") == "1"
+VERBOSE = os.environ.get("VERBOSE", "0") == "1"
 
+# Whole-folder categories: contents land under archivedOutput/<SESSION>/<name>/.
 CATEGORIES = ["AlloyModels", "AnalyzerOutput", "Feedback", "ReqsDoc"]
-SKIP_ANALYZER_DIRS = {"0","1","2","3","4","5","6","7","8","9","draft"}
+# Both log folders merge into a single Logs/ folder.
+LOG_SOURCES = ["outputlog", "RegressionLog"]
+# metagpt.log is written empty on every run and carries nothing worth keeping.
+SKIP_LOGS = {"metagpt.log"}
 
-TIME_RE = re.compile(r'^_?(\d{1,2})(AM|PM|am|pm)$')
+if not SESSION:
+    sys.exit("SESSION is required, e.g. SESSION=0720 python3 scripts/reorganize_output.py")
+if MODE not in ("copy", "move"):
+    sys.exit(f"MODE must be 'copy' or 'move', got {MODE!r}")
 
-def normalize_time(suffix):
-    m = TIME_RE.match(suffix)
-    if m:
-        return f"{m.group(1)}{m.group(2).upper()}"
-    return None
+DEST = os.path.join(ARCHIVE, SESSION)
 
-def normalize_session_name(name):
-    """Return (normalized_name, had_meaningful_suffix)"""
-    m6 = re.match(r'^(\d{2})(\d{2})(\d{2})(?:_(.+))?$', name)
-    if m6:
-        mm, dd, yy, suffix = m6.groups()
-        base = mm + dd
-        if suffix:
-            t = normalize_time("_" + suffix)
-            if t:
-                return f"{base}_{t}"
-        return base
-    m4 = re.match(r'^(\d{4})(?:_(.+))?$', name)
-    if m4:
-        base, suffix = m4.groups()
-        if suffix:
-            t = normalize_time("_" + suffix)
-            if t:
-                return f"{base}_{t}"
-            # non-time suffix (e.g. repeatedErrors) -> merge into base date
-            return base
-        return base
-    return None  # doesn't match a date pattern at all
 
-actions = []  # (src, dst, kind)
+def entry_size(path):
+    if os.path.isfile(path):
+        return os.path.getsize(path)
+    total = 0
+    for dirpath, _, filenames in os.walk(path):
+        for f in filenames:
+            fp = os.path.join(dirpath, f)
+            if os.path.isfile(fp):
+                total += os.path.getsize(fp)
+    return total
+
+
+def human(n):
+    for unit in ("B", "KB", "MB", "GB"):
+        if n < 1024 or unit == "GB":
+            return f"{n:.0f}{unit}" if unit == "B" else f"{n/1:.1f}{unit}"
+        n /= 1024
+    return f"{n}B"
+
+
+actions = []   # (src, dst, bucket)
 warnings = []
+claimed = {}   # dst -> src, to catch two sources wanting the same archive path
 
-# ---- Step 1: session folders across the 4 categories ----
-session_map = {}  # original (cat, name) -> normalized
+
+def plan(src, dst, bucket):
+    """Queue one entry, unless something already occupies the destination."""
+    if dst in claimed:
+        warnings.append(
+            f"NAME COLLISION, skipped: {os.path.relpath(src, ROOT)} would overwrite "
+            f"{os.path.relpath(claimed[dst], ROOT)} at {os.path.relpath(dst, ARCHIVE)}"
+        )
+        return
+    if os.path.exists(dst) and not FORCE:
+        warnings.append(
+            f"ALREADY ARCHIVED, skipped: {os.path.relpath(dst, ARCHIVE)} "
+            f"(set FORCE=1 to overwrite)"
+        )
+        return
+    claimed[dst] = src
+    actions.append((src, dst, bucket))
+
+
 for cat in CATEGORIES:
-    catdir = os.path.join(ROOT, cat)
-    for name in sorted(os.listdir(catdir)):
-        full = os.path.join(catdir, name)
-        if not os.path.isdir(full):
-            continue
-        if cat == "AnalyzerOutput" and name in SKIP_ANALYZER_DIRS:
-            continue
-        norm = normalize_session_name(name)
-        if norm is None:
-            warnings.append(f"UNRECOGNIZED folder pattern, left in place: {cat}/{name}")
-            continue
-        dst = os.path.join(ARCHIVE, norm, cat)
-        actions.append((full, dst, "session_dir"))
-        session_map[(cat, name)] = norm
-
-normalized_session_set = sorted(set(v for v in session_map.values()))
-
-# ---- Step 2: logs ----
-LOG_SOURCES = []
-for f in sorted(os.listdir(os.path.join(ROOT, "outputlog"))):
-    full = os.path.join(ROOT, "outputlog", f)
-    if os.path.isfile(full):
-        LOG_SOURCES.append(full)
-for sub in ["archive", "archiveMay"]:
-    subdir = os.path.join(ROOT, "outputlog", sub)
-    if os.path.isdir(subdir):
-        for f in sorted(os.listdir(subdir)):
-            full = os.path.join(subdir, f)
-            if os.path.isfile(full):
-                LOG_SOURCES.append(full)
-for f in sorted(os.listdir(os.path.join(ROOT, "RegressionLog"))):
-    full = os.path.join(ROOT, "RegressionLog", f)
-    if os.path.isfile(full) and (f.startswith("regression") and f.endswith(".log") or f.startswith("SimilarIssues_")):
-        LOG_SOURCES.append(full)
-
-LOG_DATE_RE = re.compile(r'^(?:regression)?(\d{2})(\d{2})(\d{2})?(?:[-_](.+?))?(?:\.log|\.json)?$')
-SIMILAR_RE = re.compile(r'^SimilarIssues_(\d{4})\.json$')
-
-def parse_log(fname):
-    """Return (mmdd, time_suffix_or_None) or None if undatable."""
-    base = fname
-    m = SIMILAR_RE.match(base)
-    if m:
-        return m.group(1), None
-    stem = re.sub(r'\.(log|json)$', '', base)
-    stem = re.sub(r'^regression', '', stem)
-    # 6-digit date at start = MMDDYY, 4-digit = MMDD
-    m6 = re.match(r'^(\d{2})(\d{2})(\d{2})(?:[-_](.+))?$', stem)
-    if m6:
-        mm, dd, yy, suffix = m6.groups()
-        mmdd = mm + dd
-        t = normalize_time("_" + suffix) if suffix else None
-        return mmdd, t
-    m4 = re.match(r'^(\d{4})(?:[-_](.+))?$', stem)
-    if m4:
-        mmdd, suffix = m4.groups()
-        t = normalize_time("_" + suffix) if suffix else None
-        return mmdd, t
-    return None
-
-for full in LOG_SOURCES:
-    fname = os.path.basename(full)
-    if fname == "metagpt.log" or fname == "regression_log.json":
-        warnings.append(f"UNDATABLE, left in place: {os.path.relpath(full, ROOT)}")
+    srcdir = os.path.join(ROOT, cat)
+    if not os.path.isdir(srcdir):
+        warnings.append(f"MISSING source folder, skipped: {cat}")
         continue
-    parsed = parse_log(fname)
-    if parsed is None:
-        warnings.append(f"UNPARSEABLE date, left in place: {os.path.relpath(full, ROOT)}")
+    for name in sorted(os.listdir(srcdir)):
+        plan(os.path.join(srcdir, name), os.path.join(DEST, cat, name), cat)
+
+for src_name in LOG_SOURCES:
+    srcdir = os.path.join(ROOT, src_name)
+    if not os.path.isdir(srcdir):
+        warnings.append(f"MISSING source folder, skipped: {src_name}")
         continue
-    mmdd, tsuffix = parsed
-    candidates = [s for s in normalized_session_set if s == mmdd or s.startswith(mmdd + "_")]
-    if tsuffix and f"{mmdd}_{tsuffix}" in candidates:
-        targets = [f"{mmdd}_{tsuffix}"]
-    elif len(candidates) >= 1:
-        targets = candidates
+    for name in sorted(os.listdir(srcdir)):
+        if name in SKIP_LOGS:
+            continue
+        full = os.path.join(srcdir, name)
+        if not os.path.isfile(full):
+            # A nested folder inside a log directory keeps its own name under
+            # Logs/ rather than being flattened, so nothing is silently merged.
+            warnings.append(
+                f"NESTED FOLDER kept as Logs/{name}: {os.path.relpath(full, ROOT)}"
+            )
+        plan(full, os.path.join(DEST, "Logs", name), "Logs")
+
+
+# ---- Report ----
+verb = "MOVE" if MODE == "move" else "COPY"
+print(f"{'DRY RUN' if DRY_RUN else 'EXECUTING'} — {verb} {len(actions)} entries "
+      f"into {os.path.relpath(DEST, os.path.dirname(ARCHIVE))}, "
+      f"{len(warnings)} warnings\n")
+
+by_bucket = {}
+for src, dst, bucket in actions:
+    by_bucket.setdefault(bucket, []).append((src, dst))
+
+grand_total = 0
+for bucket in list(CATEGORIES) + ["Logs"]:
+    items = by_bucket.get(bucket, [])
+    size = sum(entry_size(src) for src, _ in items)
+    grand_total += size
+    print(f"  {bucket:<16} {len(items):>4} entries  {human(size):>9}")
+    if VERBOSE:
+        for src, dst in items:
+            print(f"      {os.path.relpath(src, ROOT)}  ->  {os.path.relpath(dst, ARCHIVE)}")
+print(f"  {'TOTAL':<16} {len(actions):>4} entries  {human(grand_total):>9}")
+
+if warnings:
+    print("\n-- WARNINGS --")
+    for w in warnings:
+        print(" ", w)
+
+if DRY_RUN:
+    print("\nPreview only. Re-run with DRY_RUN=0 to execute.")
+    sys.exit(0)
+
+for src, dst, _ in actions:
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if os.path.exists(dst):          # only reachable under FORCE
+        if os.path.isdir(dst):
+            shutil.rmtree(dst)
+        else:
+            os.remove(dst)
+    if MODE == "move":
+        shutil.move(src, dst)
+    elif os.path.isdir(src):
+        shutil.copytree(src, dst)
     else:
-        targets = [mmdd]
-    for t in targets:
-        dst = os.path.join(ARCHIVE, t, "Logs", fname)
-        kind = "log_move" if len(targets) == 1 else "log_copy"
-        actions.append((full, dst, kind))
-    if len(targets) > 1:
-        warnings.append(f"AMBIGUOUS date, duplicated into {targets}: {os.path.relpath(full, ROOT)}")
+        shutil.copy2(src, dst)
 
-# ---- Execute / print plan ----
-print(f"{'DRY RUN' if DRY_RUN else 'EXECUTING'} — {len(actions)} actions, {len(warnings)} warnings\n")
-
-by_target_date = defaultdict(list)
-for src, dst, kind in actions:
-    date_folder = os.path.relpath(dst, ARCHIVE).split(os.sep)[0]
-    by_target_date[date_folder].append((src, dst, kind))
-
-for date_folder in sorted(by_target_date):
-    print(f"== {date_folder} ==")
-    for src, dst, kind in by_target_date[date_folder]:
-        print(f"  [{kind}] {os.path.relpath(src, ROOT)}  ->  {os.path.relpath(dst, ARCHIVE)}")
-
-print("\n-- WARNINGS --")
-for w in warnings:
-    print(" ", w)
-
-if not DRY_RUN:
-    moved_sources = []
-    for src, dst, kind in actions:
-        os.makedirs(os.path.dirname(dst), exist_ok=True)
-        if kind == "session_dir":
-            shutil.move(src, dst)
-        elif kind == "log_move":
-            shutil.move(src, dst)
-        elif kind == "log_copy":
-            shutil.copy2(src, dst)
-            moved_sources.append(src)
-    # remove originals that were copied (not moved) to multiple targets, once all copies exist
-    for src, dst, kind in actions:
-        if kind == "log_copy" and os.path.exists(src):
-            os.remove(src)
-    print("\nDone.")
+print(f"\nDone. {len(actions)} entries {'moved' if MODE == 'move' else 'copied'} "
+      f"to {DEST}")

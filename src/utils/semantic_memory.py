@@ -1469,13 +1469,13 @@ class SemanticMemorySystem:
         are dumped first. Best-effort: a failed snapshot must not block the wipe.
         """
         try:
+            from .file_manager import run_snapshot_stamp
+
             output_dir = output_dir or Path("Output/MemorySnapshot")
             output_dir.mkdir(parents=True, exist_ok=True)
-            now = datetime.now()
-            out = output_dir / (
-                f"memory_{self.project_name}_{now.strftime('%m%d')}_"
-                f"{now.strftime('%I%p')}.json"
-            )
+            # Stamped with the run's start hour, so a run spanning an hour
+            # boundary keeps writing the same file instead of starting a second.
+            out = output_dir / f"memory_{self.project_name}_{run_snapshot_stamp()}.json"
 
             dump = {}
             for name, collection in self._collection_map.items():
