@@ -300,27 +300,3 @@ Memory is automatically managed but can be manually inspected:
 cat memory/RE_memory.json
 cat memory/Evaluator_memory.json
 ```
-
-## Contributing
-
-Contributions are welcome! Please ensure:
-- Code follows existing structure
-- New features include documentation
-- Memory management is properly implemented
-
-## License
-
-[To be determined]
-
-## Citation
-
-If you use AutoRE in your research, please cite:
-```
-[Citation information to be added]
-```
-
-## Contact
-
-For questions and support:
-- Create an issue in the repository
-- [Contact information to be added]
